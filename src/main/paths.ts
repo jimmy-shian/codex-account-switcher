@@ -40,6 +40,33 @@ function resolveCodexViaWhere(): string | null {
   }
 }
 
+function resolveOpenAiCodexExe(): string | null {
+  const binDir = path.join(os.homedir(), 'AppData', 'Local', 'OpenAI', 'Codex', 'bin')
+  const candidates: Array<{ path: string; mtimeMs: number }> = []
+
+  const pushIfExists = (p: string): void => {
+    try {
+      const stat = fs.statSync(p)
+      if (stat.isFile()) candidates.push({ path: p, mtimeMs: stat.mtimeMs })
+    } catch {
+      /* */
+    }
+  }
+
+  pushIfExists(path.join(binDir, 'codex.exe'))
+  try {
+    for (const entry of fs.readdirSync(binDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      pushIfExists(path.join(binDir, entry.name, 'codex.exe'))
+    }
+  } catch {
+    /* */
+  }
+
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs)
+  return candidates[0]?.path ?? null
+}
+
 export function getLiveAuthPath(): string {
   return path.join(os.homedir(), '.codex', 'auth.json')
 }
@@ -65,6 +92,9 @@ export function resolveBundledCodexExe(): string | null {
 }
 
 export function resolveSystemCodexExe(): string | null {
+  const openAiCodex = resolveOpenAiCodexExe()
+  if (openAiCodex) return openAiCodex
+
   const viaWhere = resolveCodexViaWhere()
   if (viaWhere) return viaWhere
 

@@ -20,7 +20,40 @@ function isDebugWarmupMode(): boolean {
   return Boolean(process.env.CODEX_DEBUG_WARMUP_ID ?? getArgValue('--debug-warmup'))
 }
 
+function isDebugRefreshAllMode(): boolean {
+  return Boolean(process.env.CODEX_DEBUG_REFRESH_ALL) || process.argv.includes('--debug-refresh-all')
+}
+
+function isDebugMode(): boolean {
+  return isDebugWarmupMode() || isDebugRefreshAllMode()
+}
+
 async function runDebugModeIfNeeded(): Promise<boolean> {
+  if (isDebugRefreshAllMode()) {
+    const startedAt = Date.now()
+    const accounts = await service.refreshAll()
+    const outPath =
+      process.env.CODEX_DEBUG_OUT ?? getArgValue('--debug-out') ?? path.join(process.cwd(), 'refresh-all-debug.json')
+    fs.writeFileSync(
+      outPath,
+      JSON.stringify(
+        {
+          elapsedMs: Date.now() - startedAt,
+          accounts: accounts.length,
+          statuses: accounts.reduce<Record<string, number>>((acc, account) => {
+            acc[account.status] = (acc[account.status] ?? 0) + 1
+            return acc
+          }, {})
+        },
+        null,
+        2
+      ),
+      'utf8'
+    )
+    await app.quit()
+    return true
+  }
+
   const warmupAccountId = process.env.CODEX_DEBUG_WARMUP_ID ?? getArgValue('--debug-warmup')
   if (!warmupAccountId) return false
   const result = await service.debugWarmup(warmupAccountId)
@@ -40,9 +73,9 @@ function resolvePreload(): string {
 
 function createWindow(): void {
   const win = new BrowserWindow({
-    width: 860,
+    width: 1080,
     height: 720,
-    minWidth: 720,
+    minWidth: 980,
     minHeight: 560,
     webPreferences: {
       preload: resolvePreload(),
@@ -123,8 +156,8 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('accounts:warmupNeverRefreshed', async () => {
-    const warmed = await service.warmupNeverRefreshed()
-    return { warmed, ...service.listAccounts() }
+    const warmup = await service.warmupNeverRefreshed()
+    return { ...warmup, ...service.listAccounts() }
   })
 
   ipcMain.handle('accounts:warmupOne', async (_e, accountId: string) => {
@@ -182,6 +215,6 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  if (isDebugWarmupMode()) return
+  if (isDebugMode()) return
   if (process.platform !== 'darwin') app.quit()
 })

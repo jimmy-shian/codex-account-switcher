@@ -1,8 +1,11 @@
 import { randomUUID } from 'crypto'
 import { clipboard, dialog, shell } from 'electron'
 import fs from 'fs'
+import net from 'net'
 import os from 'os'
 import path from 'path'
+import tls from 'tls'
+import zlib from 'zlib'
 import type {
   AccountStatus,
   AccountsStoreFile,
@@ -29,7 +32,15 @@ const AUTH_JSON_EXPORT_TYPE = 'codex-account-switcher-export'
 const AUTH_JSON_EXPORT_VERSION = 1
 const IMPORTED_JSON_EMAIL_PLACEHOLDER = '（JSON 导入，刷新后显示邮箱）'
 const IMPORTED_EXPORT_EMAIL_PLACEHOLDER = '（备份导入，刷新后显示邮箱）'
-const REFRESH_CONCURRENCY = 3
+const REFRESH_CONCURRENCY = 8
+const BATCH_WARMUP_MIN_REMAINING_PERCENT = 95
+const CODEX_PROXY_URL = 'http://127.0.0.1:7892'
+const USAGE_ENDPOINT_URL = 'https://chatgpt.com/backend-api/wham/usage'
+const USAGE_FETCH_TIMEOUT_MS = 15000
+const DEFAULT_AUTH_ISSUER = 'https://auth.openai.com'
+const DEFAULT_AUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
+const REFRESH_TOKEN_SCOPES = 'openid profile email'
+const ACCESS_TOKEN_REFRESH_AHEAD_SECONDS = 60
 
 const ACCOUNT_STATUSES: AccountStatus[] = [
   'ok',
@@ -459,6 +470,138 @@ function extractAccessTokenFromAuthContent(content: string): string | null {
   return findStringByKeysDeep(parsed, new Set(['access_token', 'accesstoken']))
 }
 
+function extractRefreshTokenFromAuthContent(content: string): string | null {
+  return extractStringTokenFromAuthContent(content, ['refresh_token', 'refreshtoken'])
+}
+
+function extractStringTokenFromAuthContent(content: string, keys: string[]): string | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(content)
+  } catch {
+    return null
+  }
+  const keySet = new Set(keys.map((key) => key.toLowerCase()))
+  const root = asRecord(parsed)
+  const tokens = asRecord(root?.tokens)
+  if (tokens) {
+    for (const key of Object.keys(tokens)) {
+      const value = tokens[key]
+      if (keySet.has(key.toLowerCase()) && typeof value === 'string' && value.trim().length > 0) {
+        return value.trim()
+      }
+    }
+  }
+  return findStringByKeysDeep(parsed, keySet)
+}
+
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  const payload = token.split('.')[1]
+  if (!payload) return null
+  try {
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = `${normalized}${'='.repeat((4 - (normalized.length % 4)) % 4)}`
+    return asRecord(JSON.parse(Buffer.from(padded, 'base64').toString('utf8')))
+  } catch {
+    return null
+  }
+}
+
+function extractTokenExp(token: string | null): number | null {
+  if (!token) return null
+  const exp = decodeJwtPayload(token)?.exp
+  return typeof exp === 'number' && Number.isFinite(exp) ? exp : null
+}
+
+function shouldRefreshAccessToken(accessToken: string | null): boolean {
+  const exp = extractTokenExp(accessToken)
+  if (exp == null) return false
+  return exp <= Math.floor(Date.now() / 1000) + ACCESS_TOKEN_REFRESH_AHEAD_SECONDS
+}
+
+function extractClientIdClaim(token: string | null): string | null {
+  if (!token) return null
+  const clientId = decodeJwtPayload(token)?.client_id
+  return typeof clientId === 'string' && clientId.trim().length > 0 ? clientId.trim() : null
+}
+
+function normalizeScopedIdentityValue(value: unknown, marker: string): string | null {
+  if (typeof value !== 'string') return null
+  const raw = value.trim()
+  if (!raw) return null
+
+  const scoped = raw.includes('::') ? raw.slice(raw.lastIndexOf('::') + 2) : raw
+  for (const segment of scoped.split('|')) {
+    const trimmed = segment.trim()
+    if (trimmed.startsWith(marker)) {
+      const found = trimmed.slice(marker.length).trim()
+      if (found) return found
+    }
+  }
+
+  if (raw.includes('::') || raw.includes('|') || raw.includes('=') || raw.startsWith('import-sub-')) {
+    return null
+  }
+  return raw
+}
+
+function normalizeChatgptAccountId(value: unknown): string | null {
+  return normalizeScopedIdentityValue(value, 'cgpt=')
+}
+
+function normalizeWorkspaceId(value: unknown): string | null {
+  return normalizeScopedIdentityValue(value, 'ws=')
+}
+
+function extractWorkspaceIdFromToken(token: string | null): string | null {
+  if (!token) return null
+  const claims = decodeJwtPayload(token)
+  if (!claims) return null
+
+  const directKeys = ['workspace_id', 'chatgpt_account_id', 'organization_id', 'org_id']
+  for (const key of directKeys) {
+    const found = normalizeWorkspaceId(claims[key])
+    if (found) return found
+  }
+
+  const auth = asRecord(claims['https://api.openai.com/auth'])
+  if (!auth) return null
+  const orgs = auth.organizations
+  if (Array.isArray(orgs)) {
+    const defaultOrg = orgs.find((item) => asRecord(item)?.is_default === true)
+    const defaultOrgId = normalizeWorkspaceId(asRecord(defaultOrg)?.id)
+    if (defaultOrgId) return defaultOrgId
+    const firstOrgId = normalizeWorkspaceId(asRecord(orgs[0])?.id)
+    if (firstOrgId) return firstOrgId
+  }
+  for (const key of directKeys) {
+    const found = normalizeWorkspaceId(auth[key])
+    if (found) return found
+  }
+  return null
+}
+
+function extractChatgptAccountIdFromToken(token: string | null): string | null {
+  if (!token) return null
+  const claims = decodeJwtPayload(token)
+  if (!claims) return null
+
+  const direct = normalizeChatgptAccountId(claims.chatgpt_account_id)
+  if (direct) return direct
+  const auth = asRecord(claims['https://api.openai.com/auth'])
+  return normalizeChatgptAccountId(auth?.chatgpt_account_id)
+}
+
+function extractWorkspaceHeaderFromAuthContent(content: string, accessToken: string | null): string | null {
+  const idToken = extractStringTokenFromAuthContent(content, ['id_token', 'idtoken'])
+  return (
+    extractWorkspaceIdFromToken(idToken) ??
+    extractWorkspaceIdFromToken(accessToken) ??
+    extractChatgptAccountIdFromToken(idToken) ??
+    extractChatgptAccountIdFromToken(accessToken)
+  )
+}
+
 function shouldUseDeviceCodeLogin(err: unknown): boolean {
   const msg = String(err instanceof Error ? err.message : err).toLowerCase()
   return (
@@ -537,7 +680,21 @@ function summarizeAuthContent(content: string): Record<string, unknown> {
 function shouldWarmupInBatch(snapshot: QuotaSnapshot | null): boolean {
   if (!snapshot) return false
   const display = getQuotaDisplayWindows(snapshot)
-  return [display.fiveHour, display.sevenDay].some((item) => item.provided && item.remaining === 100)
+  return [display.fiveHour, display.sevenDay].some(
+    (item) => item.provided && item.remaining != null && item.remaining >= BATCH_WARMUP_MIN_REMAINING_PERCENT
+  )
+}
+
+function proxyPortLabel(proxyUrl: string): string {
+  try {
+    return new URL(proxyUrl).port || proxyUrl
+  } catch {
+    return proxyUrl
+  }
+}
+
+function compactErrorMessage(message: string): string {
+  return message.replace(/\s+/g, ' ').trim().slice(0, 300)
 }
 
 type WarmupCaptureResult = {
@@ -547,6 +704,7 @@ type WarmupCaptureResult = {
   sessionRaw: unknown | null
   sessionSnapshot: QuotaSnapshot | null
   authoritativeSnapshot: QuotaSnapshot | null
+  messageSent: boolean
   sendError: string | null
 }
 
@@ -556,24 +714,290 @@ export type WarmupOneResult = {
   message: string
 }
 
-async function fetchUsageSnapshotByAccessToken(accessToken: string): Promise<unknown> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 15000)
-  try {
-    const res = await fetch('https://chatgpt.com/backend-api/wham/usage', {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/json'
-      },
-      signal: controller.signal
-    })
-    if (!res.ok) {
-      throw new Error(`usage endpoint status ${res.status}`)
+export type WarmupBatchResult = {
+  attempted: number
+  warmed: number
+  failed: number
+  lastMessage: string | null
+}
+
+class HttpStatusError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number
+  ) {
+    super(message)
+  }
+}
+
+type JsonHttpRequestOptions = {
+  method?: 'GET' | 'POST'
+  headers?: Record<string, string>
+  body?: string | Buffer | null
+}
+
+function safeHeaderValue(value: string): string {
+  return value.replace(/[\r\n]+/g, ' ').trim()
+}
+
+function buildUsageRequestHeaders(accessToken: string, workspaceId?: string | null): Record<string, string> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${accessToken}`,
+    Accept: 'application/json',
+    'Accept-Encoding': 'identity',
+    Connection: 'close'
+  }
+  if (workspaceId) headers['ChatGPT-Account-ID'] = workspaceId
+  return headers
+}
+
+function parseProxyUrl(proxyUrl: string): { host: string; port: number; authHeader: string | null } {
+  const proxy = new URL(proxyUrl)
+  if (proxy.protocol !== 'http:') {
+    throw new Error(`暂不支持的代理协议：${proxy.protocol}`)
+  }
+  const host = proxy.hostname
+  const port = Number(proxy.port || 80)
+  if (!host || !Number.isFinite(port)) throw new Error(`无效代理地址：${proxyUrl}`)
+  const authHeader =
+    proxy.username || proxy.password
+      ? `Basic ${Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`).toString('base64')}`
+      : null
+  return { host, port, authHeader }
+}
+
+function decodeChunkedBody(body: Buffer): Buffer {
+  const chunks: Buffer[] = []
+  let offset = 0
+  while (offset < body.length) {
+    const lineEnd = body.indexOf('\r\n', offset)
+    if (lineEnd < 0) throw new Error('chunked 响应头不完整')
+    const line = body.slice(offset, lineEnd).toString('latin1').split(';')[0].trim()
+    const size = Number.parseInt(line, 16)
+    if (!Number.isFinite(size)) throw new Error('chunked 响应长度无效')
+    offset = lineEnd + 2
+    if (size === 0) break
+    if (offset + size > body.length) throw new Error('chunked 响应内容不完整')
+    chunks.push(body.slice(offset, offset + size))
+    offset += size + 2
+  }
+  return Buffer.concat(chunks)
+}
+
+function parseRawHttpResponse(raw: Buffer): { statusCode: number; headers: Record<string, string>; body: Buffer } {
+  const headerEnd = raw.indexOf('\r\n\r\n')
+  if (headerEnd < 0) throw new Error('usage endpoint 响应缺少 header')
+  const headerText = raw.slice(0, headerEnd).toString('latin1')
+  const lines = headerText.split('\r\n')
+  const statusCode = Number(lines[0]?.match(/^HTTP\/1\.[01]\s+(\d+)/i)?.[1])
+  if (!Number.isFinite(statusCode)) throw new Error('usage endpoint 响应状态无效')
+  const headers: Record<string, string> = {}
+  for (const line of lines.slice(1)) {
+    const index = line.indexOf(':')
+    if (index <= 0) continue
+    headers[line.slice(0, index).trim().toLowerCase()] = line.slice(index + 1).trim()
+  }
+  let body = raw.slice(headerEnd + 4)
+  if (headers['transfer-encoding']?.toLowerCase().includes('chunked')) {
+    body = decodeChunkedBody(body)
+  }
+  const encoding = headers['content-encoding']?.toLowerCase()
+  if (encoding === 'gzip') body = zlib.gunzipSync(body)
+  else if (encoding === 'deflate') body = zlib.inflateSync(body)
+  else if (encoding === 'br') body = zlib.brotliDecompressSync(body)
+  return { statusCode, headers, body }
+}
+
+function requestJsonViaHttpProxy(
+  urlString: string,
+  options: JsonHttpRequestOptions,
+  proxyUrl: string,
+  timeoutMs: number
+): Promise<unknown> {
+  const target = new URL(urlString)
+  if (target.protocol !== 'https:') throw new Error(`暂不支持的目标协议：${target.protocol}`)
+  const proxy = parseProxyUrl(proxyUrl)
+  const proxyLabel = proxyPortLabel(proxyUrl)
+  const method = options.method ?? 'GET'
+  const body = options.body == null ? null : Buffer.isBuffer(options.body) ? options.body : Buffer.from(options.body)
+  const headers = { ...(options.headers ?? {}) }
+  if (body && headers['Content-Length'] == null && headers['content-length'] == null) {
+    headers['Content-Length'] = String(body.length)
+  }
+  if (body && headers['Content-Type'] == null && headers['content-type'] == null) {
+    headers['Content-Type'] = 'application/x-www-form-urlencoded'
+  }
+
+  return new Promise((resolve, reject) => {
+    let finished = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let proxySocket: net.Socket | null = null
+    let secureSocket: tls.TLSSocket | null = null
+
+    const finish = (error: Error | null, value?: unknown): void => {
+      if (finished) return
+      finished = true
+      if (timer) clearTimeout(timer)
+      proxySocket?.destroy()
+      secureSocket?.destroy()
+      if (error) reject(error)
+      else resolve(value)
     }
-    return await res.json()
-  } finally {
-    clearTimeout(timer)
+
+    timer = setTimeout(() => finish(new Error(`usage endpoint 代理 ${proxyLabel} 超时`)), timeoutMs)
+    proxySocket = net.connect({ host: proxy.host, port: proxy.port })
+    let connectBuffer = Buffer.alloc(0)
+
+    const onProxyData = (chunk: Buffer): void => {
+      connectBuffer = Buffer.concat([connectBuffer, chunk])
+      const headerEnd = connectBuffer.indexOf('\r\n\r\n')
+      if (headerEnd < 0) return
+      const connectHead = connectBuffer.slice(0, headerEnd).toString('latin1')
+      const connectStatus = Number(connectHead.match(/^HTTP\/1\.[01]\s+(\d+)/i)?.[1])
+      if (connectStatus !== 200) {
+        finish(new Error(`代理 ${proxyLabel} CONNECT status ${connectStatus || 'unknown'}`))
+        return
+      }
+
+      proxySocket?.off('data', onProxyData)
+      secureSocket = tls.connect(
+        {
+          socket: proxySocket ?? undefined,
+          servername: target.hostname,
+          ALPNProtocols: ['http/1.1']
+        },
+        () => {
+          const requestPath = `${target.pathname}${target.search}`
+          const requestLines = [
+            `${method} ${requestPath} HTTP/1.1`,
+            `Host: ${target.host}`,
+            ...Object.entries(headers).map(([key, value]) => `${key}: ${safeHeaderValue(value)}`),
+            '',
+            ''
+          ]
+          secureSocket?.write(requestLines.join('\r\n'))
+          if (body) secureSocket?.write(body)
+        }
+      )
+
+      const responseChunks: Buffer[] = []
+      secureSocket.on('data', (data) => responseChunks.push(data))
+      secureSocket.on('end', () => {
+        try {
+          const response = parseRawHttpResponse(Buffer.concat(responseChunks))
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            finish(new HttpStatusError(`HTTP status ${response.statusCode}`, response.statusCode))
+            return
+          }
+          finish(null, JSON.parse(response.body.toString('utf8')))
+        } catch (e) {
+          finish(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+      secureSocket.on('error', (e) => finish(e))
+    }
+
+    proxySocket.on('connect', () => {
+      const connectLines = [
+        `CONNECT ${target.hostname}:443 HTTP/1.1`,
+        `Host: ${target.hostname}:443`,
+        'Proxy-Connection: Keep-Alive'
+      ]
+      if (proxy.authHeader) connectLines.push(`Proxy-Authorization: ${proxy.authHeader}`)
+      connectLines.push('', '')
+      proxySocket?.write(connectLines.join('\r\n'))
+    })
+    proxySocket.on('data', onProxyData)
+    proxySocket.on('error', (e) => finish(e))
+  })
+}
+
+async function fetchUsageSnapshotByAccessToken(accessToken: string, workspaceId?: string | null): Promise<unknown> {
+  const request = { headers: buildUsageRequestHeaders(accessToken, workspaceId) }
+  try {
+    return await requestJsonViaHttpProxy(USAGE_ENDPOINT_URL, request, CODEX_PROXY_URL, USAGE_FETCH_TIMEOUT_MS)
+  } catch (e) {
+    if (e instanceof HttpStatusError && (e.statusCode === 401 || e.statusCode === 403)) throw e
+    throw new Error(`usage endpoint 7892 代理失败：${compactErrorMessage(messageFromUnknown(e))}`)
+  }
+}
+
+function resolveIssuerFromAuthContent(content: string): string {
+  try {
+    const root = asRecord(JSON.parse(content))
+    const meta = asRecord(root?.meta)
+    const issuer = stringFromMetadata(meta?.issuer)
+    return issuer ?? DEFAULT_AUTH_ISSUER
+  } catch {
+    return DEFAULT_AUTH_ISSUER
+  }
+}
+
+function resolveRefreshTokenUrl(issuer: string): string {
+  const trimmed = issuer.trim().replace(/\/+$/g, '')
+  if (!trimmed) return `${DEFAULT_AUTH_ISSUER}/oauth/token`
+  if (trimmed.endsWith('/oauth/token')) return trimmed
+  return `${trimmed}/oauth/token`
+}
+
+function updateAuthContentTokens(
+  authContent: string,
+  refreshed: { access_token?: unknown; refresh_token?: unknown; id_token?: unknown }
+): { content: string; accessToken: string } {
+  const root = asRecord(JSON.parse(authContent))
+  if (!root) throw new Error('auth.json 应为 JSON 对象')
+  const tokens = asRecord(root.tokens)
+  if (!tokens) throw new Error('auth.json 缺少 tokens 对象')
+
+  if (typeof refreshed.access_token !== 'string' || refreshed.access_token.trim().length === 0) {
+    throw new Error('refresh token 响应缺少 access_token')
+  }
+  tokens.access_token = refreshed.access_token.trim()
+  if (typeof refreshed.refresh_token === 'string' && refreshed.refresh_token.trim().length > 0) {
+    tokens.refresh_token = refreshed.refresh_token.trim()
+  }
+  if (typeof refreshed.id_token === 'string' && refreshed.id_token.trim().length > 0) {
+    tokens.id_token = refreshed.id_token.trim()
+  }
+  root.tokens = tokens
+  root.last_refresh = new Date().toISOString()
+  return {
+    content: JSON.stringify(root, null, 2),
+    accessToken: refreshed.access_token.trim()
+  }
+}
+
+async function refreshAuthContentAccessToken(authContent: string): Promise<{ content: string; accessToken: string }> {
+  const refreshToken = extractRefreshTokenFromAuthContent(authContent)
+  if (!refreshToken) throw new Error('auth.json 缺少 refresh_token')
+
+  const accessToken = extractAccessTokenFromAuthContent(authContent)
+  const idToken = extractStringTokenFromAuthContent(authContent, ['id_token', 'idtoken'])
+  const clientId = extractClientIdClaim(accessToken) ?? extractClientIdClaim(idToken) ?? DEFAULT_AUTH_CLIENT_ID
+  const body = new URLSearchParams({
+    client_id: clientId,
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    scope: REFRESH_TOKEN_SCOPES
+  }).toString()
+  const request: JsonHttpRequestOptions = {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Connection: 'close'
+    },
+    body
+  }
+  const url = resolveRefreshTokenUrl(resolveIssuerFromAuthContent(authContent))
+  try {
+    const refreshed = await requestJsonViaHttpProxy(url, request, CODEX_PROXY_URL, USAGE_FETCH_TIMEOUT_MS)
+    return updateAuthContentTokens(authContent, asRecord(refreshed) ?? {})
+  } catch (e) {
+    if (e instanceof HttpStatusError && (e.statusCode === 400 || e.statusCode === 401 || e.statusCode === 403)) {
+      throw e
+    }
+    throw new Error(`refresh token 7892 代理失败：${compactErrorMessage(messageFromUnknown(e))}`)
   }
 }
 
@@ -656,7 +1080,7 @@ export class AccountService {
     const authContent = readAuthJsonFromHome(home)
     const accessToken = extractAccessTokenFromAuthContent(authContent)
     if (!accessToken) throw new Error('auth.json 缺少 access_token')
-    return fetchUsageSnapshotByAccessToken(accessToken)
+    return fetchUsageSnapshotByAccessToken(accessToken, extractWorkspaceHeaderFromAuthContent(authContent, accessToken))
   }
 
   private async readUsageQuotaSnapshotFromHome(
@@ -668,10 +1092,84 @@ export class AccountService {
     return mapUsagePayloadToSnapshot(usageRaw, planTypeFallback, creditsFallback)
   }
 
+  private persistAuthFromHome(account: SavedAccount, home: string, originalContent: string): string {
+    try {
+      const refreshed = readAuthJsonFromHome(home)
+      if (refreshed && refreshed !== originalContent) {
+        writeEncryptedBlob(blobPathForRef(account.encryptedAuthBlobRef), refreshed)
+      }
+      return refreshed
+    } catch {
+      return originalContent
+    }
+  }
+
+  private async refreshOneViaUsageEndpoint(
+    accountId: string,
+    account: SavedAccount,
+    authContent: string
+  ): Promise<SavedAccount | null> {
+    let currentAuthContent = authContent
+    let accessToken = extractAccessTokenFromAuthContent(currentAuthContent)
+    if (!accessToken && extractRefreshTokenFromAuthContent(currentAuthContent)) {
+      const refreshed = await refreshAuthContentAccessToken(currentAuthContent)
+      currentAuthContent = refreshed.content
+      accessToken = refreshed.accessToken
+    }
+    if (!accessToken) return null
+
+    if (shouldRefreshAccessToken(accessToken) && extractRefreshTokenFromAuthContent(currentAuthContent)) {
+      const refreshed = await refreshAuthContentAccessToken(currentAuthContent)
+      currentAuthContent = refreshed.content
+      accessToken = refreshed.accessToken
+    }
+
+    let usageRaw: unknown
+    try {
+      usageRaw = await fetchUsageSnapshotByAccessToken(
+        accessToken,
+        extractWorkspaceHeaderFromAuthContent(currentAuthContent, accessToken)
+      )
+    } catch (e) {
+      if (!(e instanceof HttpStatusError) || (e.statusCode !== 401 && e.statusCode !== 403)) throw e
+      const refreshed = await refreshAuthContentAccessToken(currentAuthContent)
+      currentAuthContent = refreshed.content
+      accessToken = refreshed.accessToken
+      usageRaw = await fetchUsageSnapshotByAccessToken(
+        accessToken,
+        extractWorkspaceHeaderFromAuthContent(currentAuthContent, accessToken)
+      )
+    }
+
+    const root = asRecord(usageRaw)
+    const email = stringFromMetadata(root?.email) ?? null
+    const planType = stringFromMetadata(root?.plan_type ?? root?.planType) ?? account.planType
+    const snap = mapUsagePayloadToSnapshot(usageRaw, planType, null)
+    if (!snap) return null
+
+    if (currentAuthContent !== authContent) {
+      writeEncryptedBlob(blobPathForRef(account.encryptedAuthBlobRef), currentAuthContent)
+    }
+
+    const patch: RefreshAccountPatch = {
+      lastQuotaSnapshot: snap,
+      lastRefreshedAt: new Date().toISOString(),
+      status: 'ok'
+    }
+    if (email) patch.email = email
+    if (snap.planType) patch.planType = snap.planType
+    else if (planType) patch.planType = planType
+
+    const stable = stableFingerprintFromAuthContent(currentAuthContent)
+    if (stable) patch.stableFingerprint = stable
+    return this.saveRefreshedAccount(accountId, patch, email)
+  }
+
   private async captureWarmupSnapshotFromClient(
     client: CodexRpcClient,
     home: string,
-    planTypeFallback: string | null
+    planTypeFallback: string | null,
+    useAppServerQuotaSnapshots = false
   ): Promise<WarmupCaptureResult> {
     const readRes = await client.readAccount(true)
     const { email, planType } = parseChatgptAccount(readRes)
@@ -679,7 +1177,16 @@ export class AccountService {
     const effectivePlanType = planType ?? planTypeFallback
     let baseline: QuotaSnapshot | null = null
     try {
-      baseline = await this.readUsageQuotaSnapshotFromHome(home, effectivePlanType, credits)
+      if (useAppServerQuotaSnapshots) {
+        const rateRaw = await client.readRateLimits()
+        baseline = mapRateLimitsToSnapshot(
+          rateRaw as Parameters<typeof mapRateLimitsToSnapshot>[0],
+          effectivePlanType,
+          credits
+        )
+      } else {
+        baseline = await this.readUsageQuotaSnapshotFromHome(home, effectivePlanType, credits)
+      }
     } catch {
       /* baseline 缺失时仍继续预热 */
     }
@@ -690,17 +1197,38 @@ export class AccountService {
       const sessionSig = quotaMutationSignature(sessionSnapshot)
       let authoritativeSnapshot: QuotaSnapshot | null = null
 
-      for (let attempt = 0; attempt < 5; attempt++) {
-        if (attempt > 0) await sleep(1500)
-        try {
-          const current = await this.readUsageQuotaSnapshotFromHome(home, effectivePlanType, credits)
-          const currentSig = quotaMutationSignature(current)
-          if (currentSig === sessionSig || currentSig !== baselineSig) {
-            authoritativeSnapshot = current
-            break
+      if (useAppServerQuotaSnapshots) {
+        for (let attempt = 0; attempt < 5; attempt++) {
+          if (attempt > 0) await sleep(1500)
+          try {
+            const rateRaw = await client.readRateLimits()
+            const current = mapRateLimitsToSnapshot(
+              rateRaw as Parameters<typeof mapRateLimitsToSnapshot>[0],
+              effectivePlanType,
+              credits
+            )
+            const currentSig = quotaMutationSignature(current)
+            if (current && (currentSig === sessionSig || currentSig !== baselineSig)) {
+              authoritativeSnapshot = current
+              break
+            }
+          } catch {
+            /* rate limit polling failure should not break warmup */
           }
-        } catch {
-          /* usage polling failure should not break warmup */
+        }
+      } else {
+        for (let attempt = 0; attempt < 5; attempt++) {
+          if (attempt > 0) await sleep(1500)
+          try {
+            const current = await this.readUsageQuotaSnapshotFromHome(home, effectivePlanType, credits)
+            const currentSig = quotaMutationSignature(current)
+            if (currentSig === sessionSig || currentSig !== baselineSig) {
+              authoritativeSnapshot = current
+              break
+            }
+          } catch {
+            /* usage polling failure should not break warmup */
+          }
         }
       }
 
@@ -728,6 +1256,7 @@ export class AccountService {
         sessionRaw: sendRes.sessionRateLimits,
         sessionSnapshot,
         authoritativeSnapshot,
+        messageSent: true,
         sendError: null
       }
     } catch (e) {
@@ -738,6 +1267,7 @@ export class AccountService {
         sessionRaw: null,
         sessionSnapshot: null,
         authoritativeSnapshot: null,
+        messageSent: false,
         sendError: e instanceof Error ? e.message : String(e)
       }
     }
@@ -746,15 +1276,16 @@ export class AccountService {
   private async captureWarmupSnapshotUsingTempHome(
     codex: string,
     authContent: string,
-    planTypeFallback: string | null
+    planTypeFallback: string | null,
+    proxyUrl?: string | null
   ): Promise<WarmupCaptureResult> {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-switch-warmup-capture-'))
     let client: CodexRpcClient | null = null
     try {
       writeAuthToHome(home, authContent)
-      client = new CodexRpcClient(codex, home)
+      client = new CodexRpcClient(codex, home, { proxyUrl })
       await client.start()
-      return await this.captureWarmupSnapshotFromClient(client, home, planTypeFallback)
+      return await this.captureWarmupSnapshotFromClient(client, home, planTypeFallback, !!proxyUrl)
     } finally {
       client?.dispose()
       try {
@@ -768,7 +1299,8 @@ export class AccountService {
   private async captureWarmupSnapshotUsingLiveHome(
     codex: string,
     authContent: string,
-    planTypeFallback: string | null
+    planTypeFallback: string | null,
+    proxyUrl?: string | null
   ): Promise<WarmupCaptureResult> {
     const livePath = getLiveAuthPath()
     const liveDir = getCodexDir()
@@ -777,9 +1309,9 @@ export class AccountService {
     try {
       fs.mkdirSync(liveDir, { recursive: true })
       atomicWriteAuthJson(livePath, normalizeAuthContentForRuntime(authContent))
-      client = new CodexRpcClient(codex, liveDir)
+      client = new CodexRpcClient(codex, liveDir, { proxyUrl })
       await client.start()
-      return await this.captureWarmupSnapshotFromClient(client, liveDir, planTypeFallback)
+      return await this.captureWarmupSnapshotFromClient(client, liveDir, planTypeFallback, !!proxyUrl)
     } finally {
       client?.dispose()
       try {
@@ -881,7 +1413,7 @@ export class AccountService {
     fs.mkdirSync(home, { recursive: true })
     let client: CodexRpcClient | null = null
     try {
-      client = new CodexRpcClient(codex, home)
+      client = new CodexRpcClient(codex, home, { proxyUrl: CODEX_PROXY_URL })
       this.loginSession = { client, home }
       await client.start()
       let loginId: string
@@ -1004,6 +1536,20 @@ export class AccountService {
       return this.patchStoredAccount(accountId, { status: 'snapshot_corrupt' })
     }
 
+    this.patchStoredAccount(accountId, { status: 'refreshing' })
+    try {
+      const fast = await this.refreshOneViaUsageEndpoint(accountId, acc, plain)
+      if (fast) return fast
+    } catch (e) {
+      if (e instanceof HttpStatusError && [400, 401, 403].includes(e.statusCode)) {
+        return this.patchStoredAccount(accountId, {
+          status: 'unauthorized',
+          lastRefreshedAt: new Date().toISOString()
+        })
+      }
+      // 直连 usage 失败时回退 app-server，兼容 token 过期和接口临时失败。
+    }
+
     const codex = resolveCodexExecutable()
     if (!codex) {
       return this.patchStoredAccount(accountId, { status: 'app_server_failed' })
@@ -1013,11 +1559,10 @@ export class AccountService {
     let client: CodexRpcClient | null = null
     const initialPlanType = acc.planType
     let dedupeEmail: string | null = null
-    this.patchStoredAccount(accountId, { status: 'refreshing' })
 
     try {
       writeAuthToHome(home, plain)
-      client = new CodexRpcClient(codex, home)
+      client = new CodexRpcClient(codex, home, { proxyUrl: CODEX_PROXY_URL })
       await client.start()
       let readRes: unknown
       try {
@@ -1033,6 +1578,7 @@ export class AccountService {
       }
       const { email, planType } = parseChatgptAccount(readRes)
       dedupeEmail = email
+      const persistedAuthContent = this.persistAuthFromHome(acc, home, plain)
       const effectivePlanType = planType ?? initialPlanType
       const patch: RefreshAccountPatch = {}
       if (email) {
@@ -1078,7 +1624,7 @@ export class AccountService {
         patch.status = 'ok'
       }
       patch.lastRefreshedAt = new Date().toISOString()
-      const stable = this.tryReadStableFromTempHome(home)
+      const stable = stableFingerprintFromAuthContent(persistedAuthContent) ?? this.tryReadStableFromTempHome(home)
       if (stable) patch.stableFingerprint = stable
       return this.saveRefreshedAccount(accountId, patch, dedupeEmail)
     } catch {
@@ -1123,11 +1669,14 @@ export class AccountService {
 
     const codex = resolveCodexExecutable()
     if (!codex) {
-      const refreshed = await this.refreshOne(accountId)
+      const account = this.patchStoredAccount(accountId, {
+        status: 'app_server_failed',
+        lastRefreshedAt: new Date().toISOString()
+      })
       return {
-        account: refreshed,
-        mode: refreshed.status === 'ok' ? 'refreshed' : 'failed',
-        message: refreshed.status === 'ok' ? '未找到 app-server，已执行普通刷新' : '预热失败，且普通刷新也未成功'
+        account,
+        mode: 'failed',
+        message: '未找到 app-server，无法预热'
       }
     }
 
@@ -1135,11 +1684,11 @@ export class AccountService {
     try {
       plain = readEncryptedBlob(blobPathForRef(acc.encryptedAuthBlobRef))
     } catch {
-      const refreshed = await this.refreshOne(accountId)
+      const account = this.patchStoredAccount(accountId, { status: 'snapshot_corrupt' })
       return {
-        account: refreshed,
-        mode: refreshed.status === 'ok' ? 'refreshed' : 'failed',
-        message: refreshed.status === 'ok' ? '账号快照无法发起预热，已执行普通刷新' : '账号快照损坏，预热和刷新都失败'
+        account,
+        mode: 'failed',
+        message: '账号快照损坏，无法预热'
       }
     }
 
@@ -1147,26 +1696,39 @@ export class AccountService {
     let authoritativeSnapshot: QuotaSnapshot | null = null
     let warmupEmail: string | null = null
     let warmupPlanType: string | null = acc.planType
+    let messageSent = false
     let lastSendError: string | null = null
+    let proxyFailure: string | null = null
     const baselineSig = quotaMutationSignature(acc.lastQuotaSnapshot)
+    const proxyLabel = proxyPortLabel(CODEX_PROXY_URL)
     try {
-      let capture = await this.captureWarmupSnapshotUsingTempHome(codex, plain, acc.planType)
-      warmupEmail = capture.email
-      warmupPlanType = capture.planType ?? acc.planType
-      capturedSnapshot = capture.sessionSnapshot
-      authoritativeSnapshot = capture.authoritativeSnapshot
-      lastSendError = capture.sendError
+      let capture = await this.captureWarmupSnapshotUsingTempHome(codex, plain, acc.planType, CODEX_PROXY_URL)
+      warmupEmail = capture.email ?? warmupEmail
+      warmupPlanType = capture.planType ?? warmupPlanType
+      capturedSnapshot = capture.sessionSnapshot ?? capturedSnapshot
+      authoritativeSnapshot = capture.authoritativeSnapshot ?? authoritativeSnapshot
+      messageSent = capture.messageSent || messageSent
+      lastSendError = capture.sendError ?? lastSendError
 
-      if (!capturedSnapshot && /token data is not available/i.test(capture.sendError ?? '')) {
-        capture = await this.captureWarmupSnapshotUsingLiveHome(codex, plain, warmupPlanType)
+      if (!capture.sessionSnapshot && /token data is not available/i.test(capture.sendError ?? '')) {
+        capture = await this.captureWarmupSnapshotUsingLiveHome(codex, plain, warmupPlanType, CODEX_PROXY_URL)
         warmupEmail = capture.email ?? warmupEmail
         warmupPlanType = capture.planType ?? warmupPlanType
         capturedSnapshot = capture.sessionSnapshot ?? capturedSnapshot
         authoritativeSnapshot = capture.authoritativeSnapshot ?? authoritativeSnapshot
+        messageSent = capture.messageSent || messageSent
         lastSendError = capture.sendError ?? lastSendError
       }
-    } catch {
-      /* 预热失败时仍继续刷新额度 */
+
+      if (!authoritativeSnapshot && !capturedSnapshot) {
+        if (capture.sendError) proxyFailure = `${proxyLabel}: ${compactErrorMessage(capture.sendError)}`
+        else if (capture.messageSent) proxyFailure = `${proxyLabel}: 已发送 hi，但未抓到预热快照`
+        else proxyFailure = `${proxyLabel}: 未抓到预热快照`
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      lastSendError = message
+      proxyFailure = `${proxyLabel}: ${compactErrorMessage(message)}`
     }
 
     if (authoritativeSnapshot) {
@@ -1215,38 +1777,49 @@ export class AccountService {
       }
     }
 
-    const refreshed = await this.refreshOne(accountId)
-    if (refreshed.status === 'ok') {
+    if (messageSent) {
+      const detail = proxyFailure
       return {
-        account: refreshed,
-        mode: 'refreshed',
-        message: /token data is not available/i.test(lastSendError ?? '')
-          ? '该账号缺少可发送消息的 token data，未能发送 hi，已执行普通刷新'
-          : '未抓到即时预热快照，已执行普通刷新'
+        account: acc,
+        mode: 'failed',
+        message: detail ? `预热失败（7892 代理）：${detail}` : '预热失败：已发送 hi，但未抓到预热快照'
       }
     }
+
+    const detail = proxyFailure ?? (lastSendError ? compactErrorMessage(lastSendError) : null)
     return {
-      account: refreshed,
+      account: acc,
       mode: 'failed',
-      message: lastSendError ? `预热失败：${lastSendError}` : '预热和普通刷新都失败'
+      message: detail ? `预热失败（7892 代理）：${detail}` : '预热失败，未抓到即时预热快照'
     }
   }
 
-  async warmupNeverRefreshed(): Promise<number> {
+  async warmupNeverRefreshed(): Promise<WarmupBatchResult> {
     const { accounts } = this.listAccounts()
     const targets = accounts.filter((a) => shouldWarmupInBatch(a.lastQuotaSnapshot))
 
     const codex = resolveCodexExecutable()
     if (!codex) {
-      // 没有 codex CLI，只做刷新
-      await this.refreshMany(targets.map((a) => a.id))
-      return targets.length
+      return { attempted: targets.length, warmed: 0, failed: targets.length, lastMessage: '未找到 app-server，无法预热' }
     }
 
+    let warmed = 0
+    let failed = 0
+    let lastMessage: string | null = null
     for (const a of targets) {
-      await this.warmupOne(a.id)
+      try {
+        const result = await this.warmupOne(a.id)
+        if (result.mode === 'warmed') warmed++
+        else {
+          failed++
+          lastMessage = result.message
+        }
+      } catch {
+        failed++
+        lastMessage = '预热失败'
+      }
     }
-    return targets.length
+    return { attempted: targets.length, warmed, failed, lastMessage }
   }
 
   async debugWarmup(accountId: string): Promise<Record<string, unknown>> {
@@ -1268,7 +1841,7 @@ export class AccountService {
     let client: CodexRpcClient | null = null
     try {
       writeAuthToHome(home, plain)
-      client = new CodexRpcClient(codex, home)
+      client = new CodexRpcClient(codex, home, { proxyUrl: CODEX_PROXY_URL })
       await client.start()
 
       const readRes = await client.readAccount(true)
@@ -1384,7 +1957,7 @@ export class AccountService {
     let client: CodexRpcClient | null = null
     try {
       fs.mkdirSync(home, { recursive: true })
-      client = new CodexRpcClient(codex, home)
+      client = new CodexRpcClient(codex, home, { proxyUrl: CODEX_PROXY_URL })
       await client.start()
       let readRes: unknown
       try {

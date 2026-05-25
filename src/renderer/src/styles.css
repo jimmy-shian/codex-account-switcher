@@ -140,14 +140,14 @@ body {
 .table-wrap {
   flex: 1;
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: auto;
   padding: 10px;
 }
 
 table {
   width: 100%;
-  min-width: 0;
-  table-layout: auto;
+  min-width: 1040px;
+  table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
   background: var(--surface);
@@ -182,25 +182,25 @@ tr.row-active {
 
 th:nth-child(1),
 td:nth-child(1) {
-  width: 15%;
+  width: 36%;
 }
 
 th:nth-child(2),
 td:nth-child(2),
 th:nth-child(3),
 td:nth-child(3) {
-  width: 12%;
+  width: 18%;
 }
 
 th:nth-child(4),
 td:nth-child(4) {
-  width: 1%;
+  width: 90px;
   white-space: nowrap;
 }
 
 th:nth-child(5),
 td:nth-child(5) {
-  width: 1%;
+  width: 180px;
   white-space: nowrap;
 }
 
@@ -333,6 +333,7 @@ td:nth-child(5) {
 }
 
 .account-email {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -346,13 +347,16 @@ td:nth-child(5) {
 }
 
 .plan-badge {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
+  white-space: nowrap;
   padding: 2px 6px;
   border-radius: 999px;
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.2px;
+  letter-spacing: 0;
+  line-height: 1.25;
   color: #374151;
   background: #e5e7eb;
 }
@@ -360,6 +364,11 @@ td:nth-child(5) {
 .plan-badge-active {
   color: #1d4ed8;
   background: #dbeafe;
+}
+
+.plan-badge-plus {
+  color: #b45309;
+  background: #ffedd5;
 }
 
 .quota-block {

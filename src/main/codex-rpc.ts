@@ -22,10 +22,57 @@ type SpawnTarget = {
   args: string[]
 }
 
+type CodexRpcClientOptions = {
+  proxyUrl?: string | null
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return value as Record<string, unknown>
+}
+
+function hasRateLimitSignal(value: unknown): boolean {
+  const obj = asRecord(value)
+  if (!obj) return false
+  return (
+    obj.primary !== undefined ||
+    obj.secondary !== undefined ||
+    obj.rateLimits !== undefined ||
+    obj.rateLimitsByLimitId !== undefined ||
+    obj.limit_id !== undefined ||
+    obj.limitId !== undefined
+  )
+}
+
+function findRateLimitsPayload(value: unknown, depth = 0): unknown | null {
+  if (depth > 8) return null
+  const obj = asRecord(value)
+  if (!obj) {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const hit = findRateLimitsPayload(item, depth + 1)
+        if (hit) return hit
+      }
+    }
+    return null
+  }
+
+  const direct = obj.rate_limits ?? obj.rateLimits
+  if (hasRateLimitSignal(direct)) return direct
+
+  for (const child of Object.values(obj)) {
+    const hit = findRateLimitsPayload(child, depth + 1)
+    if (hit) return hit
+  }
+  return null
+}
+
 const DEFAULT_RPC_TIMEOUT_MS = 20_000
 const ACCOUNT_READ_TIMEOUT_MS = 30_000
 const LOGIN_START_TIMEOUT_MS = 30_000
 const CHAT_SEND_TIMEOUT_MS = 45_000
+const DEFAULT_NO_PROXY =
+  'localhost,127.0.0.1,::1,.local,*.local,10.*,10.0.0.0/8,192.168.*,192.168.0.0/16,172.16.*,172.17.*,172.18.*,172.19.*,172.20.*,172.21.*,172.22.*,172.23.*,172.24.*,172.25.*,172.26.*,172.27.*,172.28.*,172.29.*,172.30.*,172.31.*,172.16.0.0/12'
 
 export type ChatMessageResult = {
   sessionRateLimits: unknown | null
@@ -51,7 +98,8 @@ export class CodexRpcClient {
 
   constructor(
     private readonly codexExe: string,
-    private readonly codexHome: string
+    private readonly codexHome: string,
+    private readonly options: CodexRpcClientOptions = {}
   ) {}
 
   onNotify(method: string, fn: NotifyHandler): () => void {
@@ -73,6 +121,17 @@ export class CodexRpcClient {
 
   private createChild(): ChildProcessWithoutNullStreams {
     const env: Record<string, string | undefined> = { ...process.env, CODEX_HOME: this.codexHome }
+    const proxyUrl = this.options.proxyUrl?.trim()
+    if (proxyUrl) {
+      env.HTTP_PROXY = proxyUrl
+      env.HTTPS_PROXY = proxyUrl
+      env.ALL_PROXY = proxyUrl
+      env.http_proxy = proxyUrl
+      env.https_proxy = proxyUrl
+      env.all_proxy = proxyUrl
+      env.NO_PROXY = env.NO_PROXY || DEFAULT_NO_PROXY
+      env.no_proxy = env.no_proxy || DEFAULT_NO_PROXY
+    }
     delete env.ELECTRON_RUN_AS_NODE
     const cwd = this.codexHome
     const stdio = ['pipe', 'pipe', 'pipe'] as const
@@ -378,12 +437,43 @@ export class CodexRpcClient {
     return new Promise((resolve) => setTimeout(resolve, ms))
   }
 
-  private async readLatestRateLimitsFromSession(threadPath: string | null | undefined): Promise<unknown | null> {
-    if (!threadPath) return null
-    for (let attempt = 0; attempt < 8; attempt++) {
+  private findThreadPathById(threadId: string): string | null {
+    const sessionsDir = path.join(this.codexHome, 'sessions')
+    if (!fs.existsSync(sessionsDir)) return null
+    const suffix = `${threadId}.jsonl`
+    const stack = [sessionsDir]
+    let found: string | null = null
+
+    while (stack.length > 0) {
+      const dir = stack.pop()!
+      let entries: fs.Dirent[]
       try {
-        if (fs.existsSync(threadPath)) {
-          const raw = fs.readFileSync(threadPath, 'utf8')
+        entries = fs.readdirSync(dir, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          stack.push(fullPath)
+        } else if (entry.isFile() && entry.name.endsWith(suffix)) {
+          found = fullPath
+        }
+      }
+    }
+
+    return found
+  }
+
+  private async readLatestRateLimitsFromSession(
+    threadPath: string | null | undefined,
+    threadId: string | null | undefined
+  ): Promise<unknown | null> {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const candidatePath = threadPath ?? (threadId ? this.findThreadPathById(threadId) : null)
+      try {
+        if (candidatePath && fs.existsSync(candidatePath)) {
+          const raw = fs.readFileSync(candidatePath, 'utf8')
           const lines = raw
             .split(/\r?\n/)
             .map((line) => line.trim())
@@ -399,8 +489,9 @@ export class CodexRpcClient {
               type?: string
               payload?: { type?: string; rate_limits?: unknown }
             }
-            if (row.type === 'event_msg' && row.payload?.type === 'token_count' && row.payload.rate_limits != null) {
-              return row.payload.rate_limits
+            if (row.type === 'event_msg' && row.payload?.type === 'token_count') {
+              const hit = findRateLimitsPayload(row.payload)
+              if (hit) return hit
             }
           }
         }
@@ -432,7 +523,7 @@ export class CodexRpcClient {
 
     await this.waitTurnCompleted(threadId, turnId, 45000)
     return {
-      sessionRateLimits: await this.readLatestRateLimitsFromSession(threadPath)
+      sessionRateLimits: await this.readLatestRateLimitsFromSession(threadPath, threadId)
     }
   }
 

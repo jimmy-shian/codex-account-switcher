@@ -25,7 +25,10 @@ export interface ImportAuthJsonResponse extends ListResult {
 }
 
 export interface WarmupResult extends ListResult {
+  attempted: number
   warmed: number
+  failed: number
+  lastMessage: string | null
 }
 
 export interface WarmupOneResponse extends ListResult {

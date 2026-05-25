@@ -4,6 +4,12 @@ import { formatReset, getQuotaDisplayWindows, quotaSummaryText } from '@shared/q
 
 const AUTO_REFRESH_MS = 5 * 60 * 1000
 type QuotaFilterValue = 'all' | 'available' | 'empty' | 'blocked'
+type QuotaRefreshUi =
+  | { mode: 'idle' }
+  | { mode: 'all' }
+  | { mode: 'warmup' }
+  | { mode: 'row'; accountId: string }
+  | { mode: 'rowWarmup'; accountId: string }
 
 function QuotaProgressBlock({
   label,
@@ -124,21 +130,29 @@ export default function App() {
   const [deleting, setDeleting] = useState(false)
   const initialQuotaLoadedRef = useRef(false)
   const quotaRefreshRunningRef = useRef(false)
-  const [quotaRefreshUi, setQuotaRefreshUi] = useState<
-    { mode: 'idle' } | { mode: 'all' } | { mode: 'warmup' } | { mode: 'row'; accountId: string }
-  >({ mode: 'idle' })
+  const quotaOperationSeqRef = useRef(0)
+  const activeQuotaOperationRef = useRef(0)
+  const [quotaRefreshUi, setQuotaRefreshUi] = useState<QuotaRefreshUi>({ mode: 'idle' })
 
   const quotaRefreshEnter = useCallback(
-    (ui: { mode: 'all' } | { mode: 'warmup' } | { mode: 'row'; accountId: string }): boolean => {
-      if (quotaRefreshRunningRef.current || loginInProgress) return false
+    (ui: Exclude<QuotaRefreshUi, { mode: 'idle' }>, opts?: { force?: boolean }): number | null => {
+      if (loginInProgress) return null
+      if (quotaRefreshRunningRef.current && !opts?.force) return null
+      const operationId = ++quotaOperationSeqRef.current
+      activeQuotaOperationRef.current = operationId
       quotaRefreshRunningRef.current = true
       setQuotaRefreshUi(ui)
-      return true
+      return operationId
     },
     [loginInProgress]
   )
 
-  const quotaRefreshExit = useCallback(() => {
+  const isQuotaOperationActive = useCallback((operationId: number): boolean => {
+    return activeQuotaOperationRef.current === operationId
+  }, [])
+
+  const quotaRefreshExit = useCallback((operationId: number) => {
+    if (activeQuotaOperationRef.current !== operationId) return
     quotaRefreshRunningRef.current = false
     setQuotaRefreshUi({ mode: 'idle' })
   }, [])
@@ -165,19 +179,21 @@ export default function App() {
 
   const runAutoRefresh = useCallback(
     async (opts: { showErrorToast: boolean; showSuccessToast: boolean }) => {
-      if (!quotaRefreshEnter({ mode: 'all' })) return
+      const operationId = quotaRefreshEnter({ mode: 'all' })
+      if (operationId == null) return
       try {
         const r = await window.codexSwitcher.refreshAll()
+        if (!isQuotaOperationActive(operationId)) return
         applyListState(r)
         setLiveInfo(null)
         if (opts.showSuccessToast) showToast('已加载并完成额度刷新')
       } catch (e) {
-        if (opts.showErrorToast) showToast(e instanceof Error ? e.message : String(e))
+        if (opts.showErrorToast && isQuotaOperationActive(operationId)) showToast(e instanceof Error ? e.message : String(e))
       } finally {
-        quotaRefreshExit()
+        quotaRefreshExit(operationId)
       }
     },
-    [applyListState, quotaRefreshEnter, quotaRefreshExit, showToast]
+    [applyListState, isQuotaOperationActive, quotaRefreshEnter, quotaRefreshExit, showToast]
   )
 
   useEffect(() => {
@@ -261,17 +277,20 @@ export default function App() {
   }
 
   const onImportAuthJson = async () => {
-    if (!quotaRefreshEnter({ mode: 'all' })) return
+    const operationId = quotaRefreshEnter({ mode: 'all' })
+    if (operationId == null) return
     try {
       const r = await window.codexSwitcher.importAuthJsonFile()
+      if (!isQuotaOperationActive(operationId)) return
       applyListState(r)
       setLiveInfo(null)
       showToast(importSummaryText(r.importSummary))
     } catch (e) {
+      if (!isQuotaOperationActive(operationId)) return
       const msg = e instanceof Error ? e.message : String(e)
       if (msg !== '已取消') showToast(msg)
     } finally {
-      quotaRefreshExit()
+      quotaRefreshExit(operationId)
     }
   }
 
@@ -286,47 +305,60 @@ export default function App() {
   }
 
   const onImportLive = async () => {
-    if (!quotaRefreshEnter({ mode: 'all' })) return
+    const operationId = quotaRefreshEnter({ mode: 'all' })
+    if (operationId == null) return
     try {
       const r = await window.codexSwitcher.importLive()
+      if (!isQuotaOperationActive(operationId)) return
       setAccounts(r.accounts)
       setActiveId(r.activeAccountId)
       setLiveAuthPresent(r.liveAuthPresent)
       setLiveInfo(null)
       showToast('已从 Live 导入并刷新')
     } catch (e) {
-      showToast(e instanceof Error ? e.message : String(e))
+      if (isQuotaOperationActive(operationId)) showToast(e instanceof Error ? e.message : String(e))
     } finally {
-      quotaRefreshExit()
+      quotaRefreshExit(operationId)
     }
   }
 
   const onRefreshAll = async () => {
-    if (!quotaRefreshEnter({ mode: 'all' })) return
+    const operationId = quotaRefreshEnter({ mode: 'all' })
+    if (operationId == null) return
     try {
       const r = await window.codexSwitcher.refreshAll()
+      if (!isQuotaOperationActive(operationId)) return
       setAccounts(r.accounts)
       setActiveId(r.activeAccountId)
       setLiveAuthPresent(r.liveAuthPresent)
       showToast('已全部刷新')
     } catch (e) {
-      showToast(e instanceof Error ? e.message : String(e))
+      if (isQuotaOperationActive(operationId)) showToast(e instanceof Error ? e.message : String(e))
     } finally {
-      quotaRefreshExit()
+      quotaRefreshExit(operationId)
     }
   }
 
   const onWarmup = async () => {
-    if (!quotaRefreshEnter({ mode: 'warmup' })) return
+    const operationId = quotaRefreshEnter({ mode: 'warmup' }, { force: true })
+    if (operationId == null) return
     try {
       const r = await window.codexSwitcher.warmupNeverRefreshed()
+      if (!isQuotaOperationActive(operationId)) return
       applyListState(r)
       setLiveInfo(null)
-      showToast(r.warmed > 0 ? `已预热 ${r.warmed} 个 100% 账号` : '没有命中 100% 额度的账号')
+      if (r.attempted === 0) {
+        showToast('没有命中 95% 以上额度的账号')
+      } else if (r.failed > 0) {
+        const detail = r.lastMessage ? `：${r.lastMessage}` : ''
+        showToast(r.warmed > 0 ? `已预热 ${r.warmed} 个，失败 ${r.failed} 个${detail}` : `一键预热失败${detail}`)
+      } else {
+        showToast(`已预热 ${r.warmed} 个 95% 以上账号`)
+      }
     } catch (e) {
-      showToast(e instanceof Error ? e.message : String(e))
+      if (isQuotaOperationActive(operationId)) showToast(e instanceof Error ? e.message : String(e))
     } finally {
-      quotaRefreshExit()
+      quotaRefreshExit(operationId)
     }
   }
 
@@ -344,9 +376,11 @@ export default function App() {
   }
 
   const onRefreshRow = async (id: string) => {
-    if (!quotaRefreshEnter({ mode: 'row', accountId: id })) return
+    const operationId = quotaRefreshEnter({ mode: 'row', accountId: id })
+    if (operationId == null) return
     try {
       const r = await window.codexSwitcher.refreshOne(id)
+      if (!isQuotaOperationActive(operationId)) return
       setAccounts(r.accounts)
       setActiveId(r.activeAccountId)
       setLiveAuthPresent(r.liveAuthPresent)
@@ -357,24 +391,26 @@ export default function App() {
         showToast(`账号状态：${statusPill(refreshed.status).text}`)
       }
     } catch (e) {
-      showToast(e instanceof Error ? e.message : String(e))
+      if (isQuotaOperationActive(operationId)) showToast(e instanceof Error ? e.message : String(e))
     } finally {
-      quotaRefreshExit()
+      quotaRefreshExit(operationId)
     }
   }
 
   const onWarmupRow = async (id: string) => {
-    if (!quotaRefreshEnter({ mode: 'row', accountId: id })) return
+    const operationId = quotaRefreshEnter({ mode: 'rowWarmup', accountId: id }, { force: true })
+    if (operationId == null) return
     try {
       const r = await window.codexSwitcher.warmupOne(id)
+      if (!isQuotaOperationActive(operationId)) return
       setAccounts(r.accounts)
       setActiveId(r.activeAccountId)
       setLiveAuthPresent(r.liveAuthPresent)
       showToast(r.warmupMessage)
     } catch (e) {
-      showToast(e instanceof Error ? e.message : String(e))
+      if (isQuotaOperationActive(operationId)) showToast(e instanceof Error ? e.message : String(e))
     } finally {
-      quotaRefreshExit()
+      quotaRefreshExit(operationId)
     }
   }
 
@@ -494,9 +530,13 @@ export default function App() {
                 const q = a.lastQuotaSnapshot
                 const isActive = a.id === activeId
                 const display = getQuotaDisplayWindows(q)
+                const planText = planBadgeText(q?.planType ?? a.planType)
+                const planBadgeClass =
+                  planText === 'PLUS' ? 'plan-badge plan-badge-plus' : 'plan-badge'
                 const quotaLoading =
                   quotaRefreshUi.mode === 'all' ||
-                  (quotaRefreshUi.mode === 'row' && quotaRefreshUi.accountId === a.id)
+                  ((quotaRefreshUi.mode === 'row' || quotaRefreshUi.mode === 'rowWarmup') &&
+                    quotaRefreshUi.accountId === a.id)
                 return (
                   <tr key={a.id} className={isActive ? 'row-active' : undefined}>
                     <td>
@@ -512,8 +552,8 @@ export default function App() {
                         <span className="account-email" title={a.email}>
                           {a.email}
                         </span>
-                        <span className="plan-badge">{planBadgeText(q?.planType ?? a.planType)}</span>
                         {isActive ? <span className="plan-badge plan-badge-active">当前</span> : null}
+                        <span className={planBadgeClass}>{planText}</span>
                       </div>
                       <div className="account-sub">
                         AUTH | {(a.stableFingerprint ?? a.fingerprint).slice(0, 12).toUpperCase()}
@@ -560,7 +600,7 @@ export default function App() {
       {quotaRefreshUi.mode !== 'idle' && (
         <div className="global-refreshing-float">
           <span className="quota-spinner" aria-hidden />
-          <span>额度刷新中...</span>
+          <span>{quotaRefreshUi.mode === 'warmup' || quotaRefreshUi.mode === 'rowWarmup' ? '预热中...' : '额度刷新中...'}</span>
         </div>
       )}
       {toast ? <div className="toast">{toast}</div> : null}
