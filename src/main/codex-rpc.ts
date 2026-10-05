@@ -1,4 +1,4 @@
-import { type ChildProcessWithoutNullStreams, spawn } from 'child_process'
+import { type ChildProcessWithoutNullStreams, spawn, type StdioOptions } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import * as readline from 'readline'
@@ -134,7 +134,8 @@ export class CodexRpcClient {
     }
     delete env.ELECTRON_RUN_AS_NODE
     const cwd = this.codexHome
-    const stdio = ['pipe', 'pipe', 'pipe'] as const
+    // 直接內嵌，避免 as const 產生 readonly tuple 與 StdioOptions 不相容
+    const stdio: StdioOptions = ['pipe', 'pipe', 'pipe']
 
     const target = this.resolveSpawnTarget()
     return spawn(target.command, target.args, {

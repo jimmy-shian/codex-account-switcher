@@ -192,4 +192,96 @@ describe('mapRateLimitsToSnapshot', () => {
     expect(snap?.primary?.usedPercent).toBe(5)
     expect(snap?.credits?.balance).toBe(0)
   })
+
+  it('解析 additional_rate_limits 嵌套 rate_limit 的 Luna Reserve 独立额度', () => {
+    const snap = mapUsagePayloadToSnapshot(
+      {
+        plan_type: 'plus',
+        rate_limit: {
+          primary_window: { used_percent: 100, limit_window_seconds: 18000, reset_at: 1000 },
+          secondary_window: { used_percent: 67, limit_window_seconds: 604800, reset_at: 2000 }
+        },
+        additional_rate_limits: [
+          {
+            limit_name: 'gpt-reserve',
+            normal_model_slug: 'gpt-5.6-luna',
+            rate_limit: {
+              allowed: true,
+              limit_reached: false,
+              primary_window: { used_percent: 3, reset_after_seconds: 604631 }
+            }
+          }
+        ]
+      },
+      null,
+      null
+    )
+
+    const reserve = snap?.buckets?.find((b) => b.limitName === 'gpt-reserve')
+    expect(reserve).toBeTruthy()
+    expect(reserve?.displayLabel).toBe('Luna Reserve')
+    expect(reserve?.primary?.usedPercent).toBe(3)
+    // reset_after_seconds 以刷新时刻为基准换算成绝对时间
+    expect(reserve?.primary?.resetsAt).toBeGreaterThan(Math.floor(Date.now() / 1000))
+  })
+
+  it('Luna Reserve limit_reached=true 时按 100% 已用处理', () => {
+    const snap = mapUsagePayloadToSnapshot(
+      {
+        plan_type: 'plus',
+        rate_limit: {
+          primary_window: { used_percent: 50, limit_window_seconds: 18000, reset_at: 1000 }
+        },
+        additional_rate_limits: [
+          {
+            limit_name: 'gpt-reserve',
+            rate_limit: {
+              allowed: true,
+              limit_reached: true,
+              primary_window: { used_percent: 3, reset_after_seconds: 604631 }
+            }
+          }
+        ]
+      },
+      null,
+      null
+    )
+
+    const reserve = snap?.buckets?.find((b) => b.limitName === 'gpt-reserve')
+    expect(reserve?.primary?.usedPercent).toBe(100)
+  })
+
+  it('解析 rate_limit_reset_credits 重置券数量', () => {
+    const snap = mapUsagePayloadToSnapshot(
+      {
+        plan_type: 'plus',
+        rate_limit: {
+          primary_window: { used_percent: 50, limit_window_seconds: 18000, reset_at: 1000 }
+        },
+        rate_limit_reset_credits: {
+          available_count: 2
+        }
+      },
+      null,
+      null
+    )
+
+    expect(snap?.resetCredits?.availableCount).toBe(2)
+    expect(snap?.resetCredits?.nearestExpiresAt).toBeNull()
+  })
+
+  it('无 rate_limit_reset_credits 时 resetCredits 为 null', () => {
+    const snap = mapUsagePayloadToSnapshot(
+      {
+        plan_type: 'plus',
+        rate_limit: {
+          primary_window: { used_percent: 50, limit_window_seconds: 18000, reset_at: 1000 }
+        }
+      },
+      null,
+      null
+    )
+
+    expect(snap?.resetCredits).toBeNull()
+  })
 })

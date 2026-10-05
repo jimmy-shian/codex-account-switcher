@@ -1,4 +1,4 @@
-import type { QuotaBucketRow, QuotaCredits, QuotaSnapshot, QuotaWindow } from '@shared/types'
+import type { QuotaBucketRow, QuotaCredits, QuotaSnapshot, QuotaWindow, ResetCreditsInfo } from '@shared/types'
 
 interface RpcRateLimitWindow {
   usedPercent?: number | null
@@ -97,6 +97,29 @@ function mapUsageWindow(w: unknown): RpcRateLimitWindow | null {
   }
 }
 
+/**
+ * 解析 wham/usage 的窗口对象。上游部分窗口（如 Luna Reserve）只给
+ * reset_after_seconds（相对秒数），以 refreshedAt 为基准换算成绝对时间。
+ */
+function mapUsageWindowWithRelativeReset(w: unknown, refreshedAtMs: number): RpcRateLimitWindow | null {
+  const obj = asObject(w)
+  if (!obj) return null
+  const usedPercent = normalizeUsedPercent(obj.used_percent ?? obj.usedPercent)
+  const limitWindowSeconds = toNullableNumber(obj.limit_window_seconds ?? obj.limitWindowSeconds)
+  const resetsAt = toNullableNumber(obj.reset_at ?? obj.resetsAt)
+  const resetAfterSeconds = toNullableNumber(
+    obj.reset_after_seconds ?? obj.resetAfterSeconds ?? obj.reset_after_sec
+  )
+  if (usedPercent == null && limitWindowSeconds == null && resetsAt == null && resetAfterSeconds == null)
+    return null
+  return {
+    usedPercent,
+    windowDurationMins:
+      limitWindowSeconds == null ? null : Math.max(1, Math.floor((limitWindowSeconds + 59) / 60)),
+    resetsAt: resetsAt ?? (resetAfterSeconds != null ? Math.floor(refreshedAtMs / 1000) + resetAfterSeconds : null)
+  }
+}
+
 function hasWindowSignal(w: QuotaWindow | null): boolean {
   return !!w && (w.usedPercent != null || w.resetsAt != null || w.windowDurationMins != null)
 }
@@ -111,6 +134,9 @@ function windowDurationKey(w: QuotaWindow | null): number {
 }
 
 function inferDisplayLabel(limitId: string, limitName: string | null, w: QuotaWindow | null): string {
+  const n = limitName?.trim()
+  // Luna Reserve：上游 limit_name 为 gpt-reserve，对应 gpt-5.6-luna 的独立额度
+  if (n && n.toLowerCase() === 'gpt-reserve') return 'Luna Reserve'
   const mins = w?.windowDurationMins
   if (mins != null) {
     if (mins >= 250 && mins <= 350) return '5 小时'
@@ -118,7 +144,6 @@ function inferDisplayLabel(limitId: string, limitName: string | null, w: QuotaWi
     if (mins >= 9000 && mins <= 11000) return '1 周'
     return `${limitId}（${mins} 分钟窗）`
   }
-  const n = limitName?.trim()
   if (n) return n
   return limitId
 }
@@ -227,7 +252,7 @@ function pickCreditsFromBuckets(items: RawCollectItem[], creditsFallback: QuotaC
   return creditsFallback
 }
 
-function collectUsageRateLimitEntries(raw: unknown): RawCollectItem[] {
+function collectUsageRateLimitEntries(raw: unknown, refreshedAtMs: number): RawCollectItem[] {
   const root = asObject(raw)
   if (!root) return []
   const out: RawCollectItem[] = []
@@ -241,8 +266,8 @@ function collectUsageRateLimitEntries(raw: unknown): RawCollectItem[] {
       b: {
         limitId,
         limitName,
-        primary: mapUsageWindow(item.primary_window ?? item.primaryWindow),
-        secondary: mapUsageWindow(item.secondary_window ?? item.secondaryWindow),
+        primary: mapUsageWindowWithRelativeReset(item.primary_window ?? item.primaryWindow, refreshedAtMs),
+        secondary: mapUsageWindowWithRelativeReset(item.secondary_window ?? item.secondaryWindow, refreshedAtMs),
         credits: null
       }
     })
@@ -254,10 +279,48 @@ function collectUsageRateLimitEntries(raw: unknown): RawCollectItem[] {
     pushEntry(root[key], key)
   }
 
+  // additional_rate_limits[]：Luna Reserve（gpt-reserve）等独立模型额度。
+  // 视窗数据在嵌套的 rate_limit.primary_window / rate_limit.secondary_window 下，
+  // 与顶层 *_rate_limit 的平铺结构不同，需单独解析。
   const additional = root.additional_rate_limits
   if (Array.isArray(additional)) {
     for (let i = 0; i < additional.length; i++) {
-      pushEntry(additional[i], `additional_rate_limits_${i}`)
+      const item = asObject(additional[i])
+      if (!item) continue
+      const nested = asObject(item.rate_limit)
+      if (nested) {
+        const limitId = asString(item.limit_id ?? item.limitId) ?? `additional_rate_limits_${i}`
+        const limitName = asString(item.limit_name ?? item.limitName)
+        // 上游语义：limit_reached=true 或 allowed=false 时该额度不可用，按 100% 已用处理
+        const limitReached = nested.limit_reached ?? nested.limitReached
+        const allowed = nested.allowed
+        const depleted =
+          limitReached === true || allowed === false
+        const primary = mapUsageWindowWithRelativeReset(
+          nested.primary_window ?? nested.primaryWindow,
+          refreshedAtMs
+        )
+        const secondary = mapUsageWindowWithRelativeReset(
+          nested.secondary_window ?? nested.secondaryWindow,
+          refreshedAtMs
+        )
+        if (depleted) {
+          if (primary) primary.usedPercent = 100
+          if (secondary) secondary.usedPercent = 100
+        }
+        out.push({
+          mapKey: limitId,
+          b: {
+            limitId,
+            limitName,
+            primary,
+            secondary,
+            credits: null
+          }
+        })
+      } else {
+        pushEntry(additional[i], `additional_rate_limits_${i}`)
+      }
     }
   } else {
     const additionalObj = asObject(additional)
@@ -277,7 +340,8 @@ export function mapUsagePayloadToSnapshot(
 ): QuotaSnapshot | null {
   const root = asObject(raw)
   if (!root) return null
-  const items = collectUsageRateLimitEntries(root)
+  const refreshedAtMs = Date.now()
+  const items = collectUsageRateLimitEntries(root, refreshedAtMs)
   if (items.length === 0) return null
 
   const usageCredits = parseUsageCredits(root.credits) ?? creditsFallback
@@ -291,7 +355,7 @@ export function mapUsagePayloadToSnapshot(
   const head = byId.codex ?? items[0].b
   const planType = asString(root.plan_type ?? root.planType) ?? planTypeFallback
 
-  return mapRateLimitsToSnapshot(
+  const snapshot = mapRateLimitsToSnapshot(
     {
       rateLimits: head,
       rateLimitsByLimitId: byId
@@ -299,6 +363,20 @@ export function mapUsagePayloadToSnapshot(
     planType,
     usageCredits
   )
+  if (snapshot) snapshot.resetCredits = parseResetCreditsFromUsage(root)
+  return snapshot
+}
+
+/** 解析 wham/usage 的 rate_limit_reset_credits（主动重置券） */
+function parseResetCreditsFromUsage(root: Record<string, unknown>): ResetCreditsInfo | null {
+  const obj = asObject(root.rate_limit_reset_credits ?? root.rateLimitResetCredits)
+  if (!obj) return null
+  const availableCount = toNullableNumber(obj.available_count ?? obj.availableCount)
+  if (availableCount == null) return null
+  return {
+    availableCount,
+    nearestExpiresAt: null
+  }
 }
 
 export function mapTokenCountRateLimitsToSnapshot(

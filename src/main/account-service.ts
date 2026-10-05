@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
-import { clipboard, dialog, shell } from 'electron'
+import { BrowserWindow, clipboard, dialog } from 'electron'
 import fs from 'fs'
+import https from 'https'
 import net from 'net'
 import os from 'os'
 import path from 'path'
@@ -16,6 +17,7 @@ import type {
   QuotaCredits,
   QuotaSnapshot,
   QuotaWindow,
+  ResetCreditsInfo,
   SavedAccount,
   SwitchResult
 } from '@shared/types'
@@ -23,9 +25,11 @@ import { getQuotaDisplayWindows } from '@shared/quota-summary'
 import { atomicWriteAuthJson, backupLiveAuthIfExists } from './auth-atomic'
 import { readEncryptedBlob, writeEncryptedBlob } from './crypto-blob'
 import { CodexRpcClient } from './codex-rpc'
+import { readCcSwitchAccounts, toCodexAuthContent, type CcSwitchAccount } from './cc-switch'
 import { fingerprintFromAuthContent, stableFingerprintFromAuthContent } from './fingerprint'
 import { mapRateLimitsToSnapshot, mapTokenCountRateLimitsToSnapshot, mapUsagePayloadToSnapshot } from './quota-map'
 import { blobPathForRef, getAccountsJsonPath, getCodexDir, getLiveAuthPath, resolveCodexExecutable } from './paths'
+import { getCcSwitchAuthPathOverride, getProxyUrl } from './settings'
 
 const LOGIN_TIMEOUT_MS = 15 * 60 * 1000
 const AUTH_JSON_EXPORT_TYPE = 'codex-account-switcher-export'
@@ -34,8 +38,8 @@ const IMPORTED_JSON_EMAIL_PLACEHOLDER = '（JSON 导入，刷新后显示邮箱�
 const IMPORTED_EXPORT_EMAIL_PLACEHOLDER = '（备份导入，刷新后显示邮箱）'
 const REFRESH_CONCURRENCY = 8
 const BATCH_WARMUP_MIN_REMAINING_PERCENT = 95
-const CODEX_PROXY_URL = 'http://127.0.0.1:7892'
 const USAGE_ENDPOINT_URL = 'https://chatgpt.com/backend-api/wham/usage'
+const RESET_CREDITS_ENDPOINT_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits'
 const USAGE_FETCH_TIMEOUT_MS = 15000
 const DEFAULT_AUTH_ISSUER = 'https://auth.openai.com'
 const DEFAULT_AUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
@@ -179,6 +183,22 @@ function statusFromRefreshError(error: unknown): AccountStatus {
   return isUnauthorizedRefreshError(error) ? 'unauthorized' : 'app_server_failed'
 }
 
+/** 匯入外部登入來源（Live、CC-Switch）的結果統計 */
+export interface ExternalAccountImportSummary {
+  /** Live auth.json 是否成功匯入 */
+  liveImported: boolean
+  /** 找不到 Live auth.json，不是錯誤 */
+  liveMissing: boolean
+  ccSwitchPath: string
+  ccSwitchFound: number
+  ccSwitchImported: number
+  ccSwitchSkipped: number
+  ccSwitchFailed: number
+  /** 匯入後需要刷新的帳號 id（新增或已更新 token 的） */
+  accountIds: string[]
+  errors: { source: string; message: string }[]
+}
+
 function emptyImportAuthJsonSummary(files = 0): ImportAuthJsonSummary {
   return {
     files,
@@ -244,10 +264,10 @@ function parseJsonObjectOrThrow(content: string, label: string): Record<string, 
   try {
     parsed = JSON.parse(content)
   } catch {
-    throw new Error(`${label} JSON 解析失败`)
+    throw new Error(`${label} 不是合法的 JSON，格式有误`)
   }
   const obj = asRecord(parsed)
-  if (!obj) throw new Error(`${label} 应为 JSON 对象`)
+  if (!obj) throw new Error(`${label} 不是 JSON 对象，格式有误`)
   return obj
 }
 
@@ -260,8 +280,17 @@ function stringifyAuthJsonValue(value: unknown, label: string): string {
       throw new Error(`${label} 的 authJson 字符串不是有效 JSON`)
     }
   }
-  if (!asRecord(parsed)) throw new Error(`${label} 的 authJson 应为 JSON 对象`)
+  if (!asRecord(parsed)) throw new Error(`${label} 的 authJson 不是 JSON 对象，格式有误`)
   return JSON.stringify(parsed, null, 2)
+}
+
+/** 匯入前確認內容看起來是 codex auth.json，避免匯入後才發現是一般 JSON */
+function assertAuthJsonTokens(content: string, label: string): void {
+  const obj = parseJsonObjectOrThrow(content, label)
+  if (extractAccessTokenFromAuthContent(content)) return
+  const apiKey = obj.OPENAI_API_KEY
+  if (typeof apiKey === 'string' && apiKey.trim().length > 0) return
+  throw new Error(`${label} 找不到 tokens.access_token，也不是 API key 模式，可能不是 codex auth.json`)
 }
 
 function metadataFromExportedAccount(account: Record<string, unknown>): ImportAuthMetadata {
@@ -285,28 +314,35 @@ function metadataFromExportedAccount(account: Record<string, unknown>): ImportAu
 }
 
 function parseAuthJsonImportEntries(filePath: string, content: string): ImportAuthEntry[] {
-  const parsed = parseJsonObjectOrThrow(content, path.basename(filePath))
+  const fileLabel = path.basename(filePath)
+  const parsed = parseJsonObjectOrThrow(content, fileLabel)
 
   if (parsed.type === AUTH_JSON_EXPORT_TYPE) {
     if (parsed.version !== AUTH_JSON_EXPORT_VERSION) {
-      throw new Error(`不支持的导出文件版本：${String(parsed.version)}`)
+      throw new Error(`${fileLabel} 的备份版本是 ${String(parsed.version)}，目前只支持版本 ${AUTH_JSON_EXPORT_VERSION}`)
     }
     if (!Array.isArray(parsed.accounts)) {
-      throw new Error('导出文件缺少 accounts 数组')
+      throw new Error(`${fileLabel} 缺少 accounts 数组，不是本工具导出的备份`)
+    }
+    if (parsed.accounts.length === 0) {
+      throw new Error(`${fileLabel} 的 accounts 数组是空的，没有账号可导入`)
     }
     return parsed.accounts.map((item, index) => {
       const account = asRecord(item)
-      if (!account) throw new Error(`导出文件第 ${index + 1} 个账号不是 JSON 对象`)
-      const label = `导出文件第 ${index + 1} 个账号`
+      if (!account) throw new Error(`${fileLabel} 第 ${index + 1} 个账号不是 JSON 对象`)
+      const label = `${fileLabel} 第 ${index + 1} 个账号`
       const metadata = metadataFromExportedAccount(account)
+      const entryContent = stringifyAuthJsonValue(account.authJson, label)
+      assertAuthJsonTokens(entryContent, label)
       return {
-        content: stringifyAuthJsonValue(account.authJson, label),
+        content: entryContent,
         placeholderEmail: metadata.email ?? IMPORTED_EXPORT_EMAIL_PLACEHOLDER,
         metadata
       }
     })
   }
 
+  assertAuthJsonTokens(content, fileLabel)
   return [{ content, placeholderEmail: IMPORTED_JSON_EMAIL_PLACEHOLDER }]
 }
 
@@ -697,6 +733,24 @@ function compactErrorMessage(message: string): string {
   return message.replace(/\s+/g, ' ').trim().slice(0, 300)
 }
 
+/** 檔案系統錯誤碼轉成人看得懂的原因，避免直接丟 ENOENT / EPERM */
+const FS_ERROR_HINTS: Record<string, string> = {
+  ENOENT: '文件不存在或已被移动',
+  EACCES: '没有访问该路径的权限',
+  EPERM: '没有访问该路径的权限',
+  EISDIR: '选中的是文件夹，不是文件',
+  ENOTDIR: '路径中的某一段不是文件夹',
+  EBUSY: '文件被其他程序占用',
+  ENOSPC: '磁盘空间不足',
+  EROFS: '目标是只读位置，无法写入'
+}
+
+function describeFsError(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code
+  if (typeof code === 'string' && FS_ERROR_HINTS[code]) return FS_ERROR_HINTS[code]
+  return compactErrorMessage(messageFromUnknown(error))
+}
+
 type WarmupCaptureResult = {
   email: string | null
   planType: string | null
@@ -797,7 +851,8 @@ function parseRawHttpResponse(raw: Buffer): { statusCode: number; headers: Recor
     if (index <= 0) continue
     headers[line.slice(0, index).trim().toLowerCase()] = line.slice(index + 1).trim()
   }
-  let body = raw.slice(headerEnd + 4)
+  // 明確標註型別：zlib 與自製解碼器回傳 Buffer<ArrayBufferLike>，避免推導成更窄的型別
+  let body: Buffer<ArrayBufferLike> = raw.slice(headerEnd + 4)
   if (headers['transfer-encoding']?.toLowerCase().includes('chunked')) {
     body = decodeChunkedBody(body)
   }
@@ -912,13 +967,128 @@ function requestJsonViaHttpProxy(
   })
 }
 
+function requestJsonDirect(
+  urlString: string,
+  options: JsonHttpRequestOptions,
+  timeoutMs: number
+): Promise<unknown> {
+  const target = new URL(urlString)
+  if (target.protocol !== 'https:') throw new Error(`暂不支持的目标协议：${target.protocol}`)
+  const method = options.method ?? 'GET'
+  const body = options.body == null ? null : Buffer.isBuffer(options.body) ? options.body : Buffer.from(options.body)
+  const headers = { ...(options.headers ?? {}) }
+  if (body && headers['Content-Length'] == null && headers['content-length'] == null) {
+    headers['Content-Length'] = String(body.length)
+  }
+  if (body && headers['Content-Type'] == null && headers['content-type'] == null) {
+    headers['Content-Type'] = 'application/x-www-form-urlencoded'
+  }
+
+  return new Promise((resolve, reject) => {
+    let finished = false
+    const finish = (error: Error | null, value?: unknown): void => {
+      if (finished) return
+      finished = true
+      if (error) reject(error)
+      else resolve(value)
+    }
+
+    const req = https.request(
+      {
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || 443,
+        path: `${target.pathname}${target.search}`,
+        method,
+        headers
+      },
+      (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => chunks.push(chunk))
+        res.on('end', () => {
+          try {
+            const statusCode = res.statusCode ?? 0
+            if (statusCode < 200 || statusCode >= 300) {
+              finish(new HttpStatusError(`HTTP status ${statusCode}`, statusCode))
+              return
+            }
+            finish(null, JSON.parse(Buffer.concat(chunks).toString('utf8')))
+          } catch (e) {
+            finish(e instanceof Error ? e : new Error(String(e)))
+          }
+        })
+        res.on('error', (e) => finish(e))
+      }
+    )
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`请求超时（${timeoutMs}ms）`))
+    })
+    req.on('error', (e) => finish(e))
+    if (body) req.write(body)
+    req.end()
+  })
+}
+
+async function requestJson(
+  urlString: string,
+  options: JsonHttpRequestOptions,
+  timeoutMs: number
+): Promise<unknown> {
+  const proxyUrl = getProxyUrl()
+  if (!proxyUrl) return requestJsonDirect(urlString, options, timeoutMs)
+  return requestJsonViaHttpProxy(urlString, options, proxyUrl, timeoutMs)
+}
+
 async function fetchUsageSnapshotByAccessToken(accessToken: string, workspaceId?: string | null): Promise<unknown> {
   const request = { headers: buildUsageRequestHeaders(accessToken, workspaceId) }
   try {
-    return await requestJsonViaHttpProxy(USAGE_ENDPOINT_URL, request, CODEX_PROXY_URL, USAGE_FETCH_TIMEOUT_MS)
+    return await requestJson(USAGE_ENDPOINT_URL, request, USAGE_FETCH_TIMEOUT_MS)
   } catch (e) {
     if (e instanceof HttpStatusError && (e.statusCode === 401 || e.statusCode === 403)) throw e
-    throw new Error(`usage endpoint 7892 代理失败：${compactErrorMessage(messageFromUnknown(e))}`)
+    throw new Error(`usage endpoint 请求失败：${compactErrorMessage(messageFromUnknown(e))}`)
+  }
+}
+
+/** ISO8601 / RFC3339 转 Unix 秒；解析失败返回 null */
+function parseIso8601ToUnixSeconds(value: unknown): number | null {
+  if (typeof value !== 'string' || !value.trim()) return null
+  const ms = Date.parse(value)
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null
+}
+
+/**
+ * 拉取该账号所有「可用」的主动重置券，按到期时间升序（最早在前）。
+ * `GET /backend-api/wham/rate-limit-reset-credits`（只读、不消耗）。
+ * 失败时返回 null，不阻断额度刷新主流程。
+ */
+async function fetchResetCreditsByAccessToken(
+  accessToken: string,
+  workspaceId?: string | null
+): Promise<ResetCreditsInfo | null> {
+  const request = { headers: buildUsageRequestHeaders(accessToken, workspaceId) }
+  let raw: unknown
+  try {
+    raw = await requestJson(RESET_CREDITS_ENDPOINT_URL, request, USAGE_FETCH_TIMEOUT_MS)
+  } catch {
+    return null
+  }
+  const root = asRecord(raw)
+  if (!root) return null
+  // credits 非 array 视为格式异常，返回 null 保留 usage payload 解析出的数量
+  if (!Array.isArray(root.credits)) return null
+  const available: number[] = []
+  for (const c of root.credits) {
+    const obj = asRecord(c)
+    if (!obj) continue
+    if (obj.status !== 'available') continue
+    const expiresAt = parseIso8601ToUnixSeconds(obj.expires_at ?? obj.expiresAt)
+    if (expiresAt != null) available.push(expiresAt)
+  }
+  available.sort((a, b) => a - b)
+  const availableCount = toNullableNumber(root.available_count ?? root.availableCount)
+  return {
+    availableCount: availableCount ?? available.length,
+    nearestExpiresAt: available.length ? available[0] : null
   }
 }
 
@@ -991,20 +1161,22 @@ async function refreshAuthContentAccessToken(authContent: string): Promise<{ con
   }
   const url = resolveRefreshTokenUrl(resolveIssuerFromAuthContent(authContent))
   try {
-    const refreshed = await requestJsonViaHttpProxy(url, request, CODEX_PROXY_URL, USAGE_FETCH_TIMEOUT_MS)
+    const refreshed = await requestJson(url, request, USAGE_FETCH_TIMEOUT_MS)
     return updateAuthContentTokens(authContent, asRecord(refreshed) ?? {})
   } catch (e) {
     if (e instanceof HttpStatusError && (e.statusCode === 400 || e.statusCode === 401 || e.statusCode === 403)) {
       throw e
     }
-    throw new Error(`refresh token 7892 代理失败：${compactErrorMessage(messageFromUnknown(e))}`)
+    throw new Error(`refresh token 请求失败：${compactErrorMessage(messageFromUnknown(e))}`)
   }
 }
 
 export class AccountService {
   private loginSession: { client: CodexRpcClient; home: string } | null = null
+  private loginWindow: BrowserWindow | null = null
 
   cancelAddViaLogin(): void {
+    this.closeLoginWindow()
     const s = this.loginSession
     if (!s) return
     try {
@@ -1012,6 +1184,40 @@ export class AccountService {
     } catch {
       /* */
     }
+  }
+
+  private closeLoginWindow(): void {
+    const win = this.loginWindow
+    this.loginWindow = null
+    if (!win) return
+    try {
+      if (!win.isDestroyed()) win.close()
+    } catch {
+      /* */
+    }
+  }
+
+  /** 在應用程式內開啟登入頁，避免切換到外部瀏覽器 */
+  private openEmbeddedLoginWindow(authUrl: string): void {
+    this.closeLoginWindow()
+    const win = new BrowserWindow({
+      width: 520,
+      height: 760,
+      title: 'Codex 登入',
+      autoHideMenuBar: true,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        partition: 'persist:codex-login'
+      }
+    })
+    this.loginWindow = win
+    win.on('closed', () => {
+      if (this.loginWindow === win) this.loginWindow = null
+    })
+    win.loadURL(authUrl).catch(() => {
+      /* 載入失敗時仍可改用外部瀏覽器重試 */
+    })
   }
 
   private tryReadStableFromTempHome(home: string): string | undefined {
@@ -1083,6 +1289,21 @@ export class AccountService {
     return fetchUsageSnapshotByAccessToken(accessToken, extractWorkspaceHeaderFromAuthContent(authContent, accessToken))
   }
 
+  /** 从 home 读取重置券明细；失败返回 null，不阻断额度刷新 */
+  private async readResetCreditsFromHome(home: string): Promise<ResetCreditsInfo | null> {
+    try {
+      const authContent = readAuthJsonFromHome(home)
+      const accessToken = extractAccessTokenFromAuthContent(authContent)
+      if (!accessToken) return null
+      return await fetchResetCreditsByAccessToken(
+        accessToken,
+        extractWorkspaceHeaderFromAuthContent(authContent, accessToken)
+      )
+    } catch {
+      return null
+    }
+  }
+
   private async readUsageQuotaSnapshotFromHome(
     home: string,
     planTypeFallback: string | null,
@@ -1146,6 +1367,13 @@ export class AccountService {
     const planType = stringFromMetadata(root?.plan_type ?? root?.planType) ?? account.planType
     const snap = mapUsagePayloadToSnapshot(usageRaw, planType, null)
     if (!snap) return null
+
+    // 重置券明细：只读接口，失败不阻断额度刷新
+    const resetCredits = await fetchResetCreditsByAccessToken(
+      accessToken,
+      extractWorkspaceHeaderFromAuthContent(currentAuthContent, accessToken)
+    )
+    if (resetCredits) snap.resetCredits = resetCredits
 
     if (currentAuthContent !== authContent) {
       writeEncryptedBlob(blobPathForRef(account.encryptedAuthBlobRef), currentAuthContent)
@@ -1413,33 +1641,34 @@ export class AccountService {
     fs.mkdirSync(home, { recursive: true })
     let client: CodexRpcClient | null = null
     try {
-      client = new CodexRpcClient(codex, home, { proxyUrl: CODEX_PROXY_URL })
+      client = new CodexRpcClient(codex, home, { proxyUrl: getProxyUrl() || null })
       this.loginSession = { client, home }
       await client.start()
       let loginId: string
       try {
         const webLogin = await client.loginWithChatgpt()
         loginId = webLogin.loginId
-        await shell.openExternal(webLogin.authUrl)
+        this.openEmbeddedLoginWindow(webLogin.authUrl)
       } catch (e) {
         if (!shouldUseDeviceCodeLogin(e)) throw e
 
         const deviceLogin = await client.loginWithChatgptDeviceCode()
         loginId = deviceLogin.loginId
         clipboard.writeText(deviceLogin.userCode)
-        await shell.openExternal(deviceLogin.verificationUrl)
+        this.openEmbeddedLoginWindow(deviceLogin.verificationUrl)
         await dialog.showMessageBox({
           type: 'info',
           title: '切换到设备码登录',
           message: '本地登录端口被占用，已切换到设备码登录。',
           detail:
-            `已自动打开登录页面，并将验证码复制到剪贴板。\n\n` +
+            `已在内建窗口打开登录页面，并将验证码复制到剪贴板。\n\n` +
             `验证码: ${deviceLogin.userCode}\n` +
             `登录地址: ${deviceLogin.verificationUrl}`
         })
       }
       const done = await client.waitLoginCompleted(loginId, LOGIN_TIMEOUT_MS)
       this.loginSession = null
+      this.closeLoginWindow()
       if (!done.success) {
         throw new Error(done.error || '登录失败')
       }
@@ -1469,9 +1698,15 @@ export class AccountService {
       const store = loadStore()
       store.accounts.push(acc)
       saveStore(store)
-      return acc
+      // 登入後立即刷新額度，否則列表會停在「待刷新 / UNKNOWN」且顯示「未提供」
+      try {
+        return await this.refreshOne(id)
+      } catch {
+        return acc
+      }
     } finally {
       this.loginSession = null
+      this.closeLoginWindow()
       client?.dispose()
       try {
         fs.rmSync(home, { recursive: true, force: true })
@@ -1562,7 +1797,7 @@ export class AccountService {
 
     try {
       writeAuthToHome(home, plain)
-      client = new CodexRpcClient(codex, home, { proxyUrl: CODEX_PROXY_URL })
+      client = new CodexRpcClient(codex, home, { proxyUrl: getProxyUrl() || null })
       await client.start()
       let readRes: unknown
       try {
@@ -1593,6 +1828,10 @@ export class AccountService {
       try {
         const usageRaw = await this.readUsageSnapshotFromHome(home)
         snap = mapUsagePayloadToSnapshot(usageRaw, effectivePlanType, creditsFromAccount)
+        if (snap) {
+          const resetCredits = await this.readResetCreditsFromHome(home)
+          if (resetCredits) snap.resetCredits = resetCredits
+        }
       } catch {
         // usage 接口失败时再走 app-server 的 rateLimits/read
       }
@@ -1700,9 +1939,10 @@ export class AccountService {
     let lastSendError: string | null = null
     let proxyFailure: string | null = null
     const baselineSig = quotaMutationSignature(acc.lastQuotaSnapshot)
-    const proxyLabel = proxyPortLabel(CODEX_PROXY_URL)
+    const proxyUrl = getProxyUrl()
+    const proxyLabel = proxyUrl ? proxyPortLabel(proxyUrl) : '直连'
     try {
-      let capture = await this.captureWarmupSnapshotUsingTempHome(codex, plain, acc.planType, CODEX_PROXY_URL)
+      let capture = await this.captureWarmupSnapshotUsingTempHome(codex, plain, acc.planType, proxyUrl || null)
       warmupEmail = capture.email ?? warmupEmail
       warmupPlanType = capture.planType ?? warmupPlanType
       capturedSnapshot = capture.sessionSnapshot ?? capturedSnapshot
@@ -1711,7 +1951,7 @@ export class AccountService {
       lastSendError = capture.sendError ?? lastSendError
 
       if (!capture.sessionSnapshot && /token data is not available/i.test(capture.sendError ?? '')) {
-        capture = await this.captureWarmupSnapshotUsingLiveHome(codex, plain, warmupPlanType, CODEX_PROXY_URL)
+        capture = await this.captureWarmupSnapshotUsingLiveHome(codex, plain, warmupPlanType, proxyUrl || null)
         warmupEmail = capture.email ?? warmupEmail
         warmupPlanType = capture.planType ?? warmupPlanType
         capturedSnapshot = capture.sessionSnapshot ?? capturedSnapshot
@@ -1782,7 +2022,7 @@ export class AccountService {
       return {
         account: acc,
         mode: 'failed',
-        message: detail ? `预热失败（7892 代理）：${detail}` : '预热失败：已发送 hi，但未抓到预热快照'
+        message: detail ? `预热失败（${proxyLabel}）：${detail}` : '预热失败：已发送 hi，但未抓到预热快照'
       }
     }
 
@@ -1790,7 +2030,7 @@ export class AccountService {
     return {
       account: acc,
       mode: 'failed',
-      message: detail ? `预热失败（7892 代理）：${detail}` : '预热失败，未抓到即时预热快照'
+      message: detail ? `预热失败（${proxyLabel}）：${detail}` : '预热失败，未抓到即时预热快照'
     }
   }
 
@@ -1841,7 +2081,7 @@ export class AccountService {
     let client: CodexRpcClient | null = null
     try {
       writeAuthToHome(home, plain)
-      client = new CodexRpcClient(codex, home, { proxyUrl: CODEX_PROXY_URL })
+      client = new CodexRpcClient(codex, home, { proxyUrl: getProxyUrl() || null })
       await client.start()
 
       const readRes = await client.readAccount(true)
@@ -1957,7 +2197,7 @@ export class AccountService {
     let client: CodexRpcClient | null = null
     try {
       fs.mkdirSync(home, { recursive: true })
-      client = new CodexRpcClient(codex, home, { proxyUrl: CODEX_PROXY_URL })
+      client = new CodexRpcClient(codex, home, { proxyUrl: getProxyUrl() || null })
       await client.start()
       let readRes: unknown
       try {
@@ -1973,6 +2213,10 @@ export class AccountService {
       try {
         const usageRaw = await this.readUsageSnapshotFromHome(home)
         snap = mapUsagePayloadToSnapshot(usageRaw, planType, creditsFromAccount)
+        if (snap) {
+          const resetCredits = await this.readResetCreditsFromHome(home)
+          if (resetCredits) snap.resetCredits = resetCredits
+        }
       } catch {
         // usage 接口失败时回退
       }
@@ -2022,11 +2266,105 @@ export class AccountService {
     }
     const content = fs.readFileSync(live, 'utf8')
     const result = await this.importAuthPlainContent(content, '（已导入 Live，刷新后显示邮箱）')
+    // 匯入後立即刷新，否則畫面會停在「待刷新 / UNKNOWN」且沒有額度
+    try {
+      await this.refreshOne(result.accountId)
+    } catch {
+      /* 刷新失敗時仍保留已匯入的帳號，讓使用者可手動重試 */
+    }
     return result.accountId
   }
 
+  /**
+   * 匯入 CC-Switch 已登入的所有 Codex 帳號。
+   * CC-Switch 只存 refresh_token，先換成 access_token 再寫入本機帳號庫。
+   */
+  private async importCcSwitchAccounts(summary: ExternalAccountImportSummary): Promise<void> {
+    const result = readCcSwitchAccounts(getCcSwitchAuthPathOverride())
+    summary.ccSwitchPath = result.filePath
+    if (result.missing) return
+
+    summary.ccSwitchFound = result.accounts.length
+    for (const account of result.accounts) {
+      try {
+        const { accountId, outcome } = await this.importCcSwitchAccount(account)
+        if (outcome === 'skipped') {
+          summary.ccSwitchSkipped += 1
+        } else {
+          summary.ccSwitchImported += 1
+          summary.accountIds.push(accountId)
+        }
+      } catch (e) {
+        summary.ccSwitchFailed += 1
+        summary.errors.push({
+          source: account.email ?? account.accountId,
+          message: messageFromUnknown(e)
+        })
+      }
+    }
+  }
+
+  private async importCcSwitchAccount(
+    account: CcSwitchAccount
+  ): Promise<{ accountId: string; outcome: ImportPlainOutcome }> {
+    const draft = toCodexAuthContent(account)
+    // access_token 留空時必須先換 token，否則匯入的帳號無法讀取額度
+    const { content } = await refreshAuthContentAccessToken(draft)
+    return this.importAuthPlainContent(
+      content,
+      `（CC-Switch，刷新后显示邮箱）`,
+      account.email ? { email: account.email } : undefined
+    )
+  }
+
+  /**
+   * 合併「匯入目前 Live」與「重新整理」：抓取 Live 與 CC-Switch 已登入帳號，再刷新全部額度。
+   * 單一來源失敗不影響其他來源，失敗原因寫在 errors 內回傳給畫面。
+   */
+  async syncAccounts(): Promise<ExternalAccountImportSummary> {
+    const summary: ExternalAccountImportSummary = {
+      liveImported: false,
+      liveMissing: false,
+      ccSwitchPath: '',
+      ccSwitchFound: 0,
+      ccSwitchImported: 0,
+      ccSwitchSkipped: 0,
+      ccSwitchFailed: 0,
+      accountIds: [],
+      errors: []
+    }
+
+    const livePath = getLiveAuthPath()
+    if (!fs.existsSync(livePath)) {
+      summary.liveMissing = true
+    } else {
+      try {
+        const content = fs.readFileSync(livePath, 'utf8')
+        const result = await this.importAuthPlainContent(content, '（已导入 Live，刷新后显示邮箱）')
+        summary.liveImported = true
+        summary.accountIds.push(result.accountId)
+      } catch (e) {
+        summary.errors.push({ source: 'live', message: messageFromUnknown(e) })
+      }
+    }
+
+    try {
+      await this.importCcSwitchAccounts(summary)
+    } catch (e) {
+      summary.errors.push({ source: 'cc-switch', message: messageFromUnknown(e) })
+    }
+
+    await this.refreshAll()
+    return summary
+  }
+
   async importAuthJsonFromPath(filePath: string): Promise<ImportAuthJsonSummary> {
-    const content = fs.readFileSync(filePath, 'utf8')
+    let content: string
+    try {
+      content = fs.readFileSync(filePath, 'utf8')
+    } catch (e) {
+      throw new Error(`无法读取文件：${describeFsError(e)}`)
+    }
     const entries = parseAuthJsonImportEntries(filePath, content)
     const summary = emptyImportAuthJsonSummary(1)
     for (let index = 0; index < entries.length; index++) {
@@ -2048,6 +2386,7 @@ export class AccountService {
   }
 
   async importAuthJsonFromPaths(filePaths: string[]): Promise<ImportAuthJsonSummary> {
+    if (filePaths.length === 0) throw new Error('没有选择任何文件')
     const summary = emptyImportAuthJsonSummary()
     for (const filePath of filePaths) {
       try {
@@ -2059,21 +2398,27 @@ export class AccountService {
       }
     }
     if (summary.accounts === 0 && summary.failed > 0) {
-      throw new Error(summary.errors[0]?.message ?? 'JSON 导入失败')
+      const detail = summary.errors
+        .slice(0, 3)
+        .map((item) => `${path.basename(item.filePath)}：${item.message}`)
+        .join('；')
+      throw new Error(`导入失败，没有账号写入${detail ? `（${detail}）` : ''}`)
     }
     return summary
   }
 
   exportAuthJsonToDirectory(directoryPath: string): ExportAuthJsonSummary {
     const store = loadStore()
-    if (store.accounts.length === 0) throw new Error('没有可导出的账号')
+    if (store.accounts.length === 0) throw new Error('没有可导出的账号，请先添加账号')
 
     const exports = store.accounts.map((account, index) => {
       let plain: string
       try {
         plain = readEncryptedBlob(blobPathForRef(account.encryptedAuthBlobRef))
       } catch {
-        throw new Error(`账号 ${exportAccountLabel(account)} 的本地快照损坏，无法导出`)
+        throw new Error(
+          `账号 ${exportAccountLabel(account)} 的本地快照损坏或已被删除，无法导出，请先删除该账号再试`
+        )
       }
       const authJson = parseJsonObjectOrThrow(plain, `账号 ${exportAccountLabel(account)} 的 auth.json`)
       return {
@@ -2082,13 +2427,31 @@ export class AccountService {
       }
     })
 
-    fs.mkdirSync(directoryPath, { recursive: true })
+    try {
+      fs.mkdirSync(directoryPath, { recursive: true })
+    } catch (e) {
+      throw new Error(`无法创建导出目录：${describeFsError(e)}`)
+    }
     const usedPaths = new Set<string>()
-    const filePaths = exports.map((item) => {
+    const filePaths: string[] = []
+    const failures: string[] = []
+    for (const item of exports) {
       const target = uniqueExportFilePath(directoryPath, item.baseName, usedPaths)
-      fs.writeFileSync(target, JSON.stringify(item.authJson, null, 2), 'utf8')
-      return target
-    })
+      try {
+        fs.writeFileSync(target, JSON.stringify(item.authJson, null, 2), 'utf8')
+        filePaths.push(target)
+      } catch (e) {
+        failures.push(`${path.basename(target)}：${describeFsError(e)}`)
+      }
+    }
+    if (failures.length > 0) {
+      const detail = failures.slice(0, 3).join('；')
+      throw new Error(
+        filePaths.length > 0
+          ? `导出部分成功：已写入 ${filePaths.length} 个，${failures.length} 个失败（${detail}）`
+          : `导出失败，没有写入任何文件（${detail}）`
+      )
+    }
     return { directoryPath, accountCount: filePaths.length, filePaths }
   }
 

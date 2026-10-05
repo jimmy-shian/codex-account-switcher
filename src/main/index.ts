@@ -1,14 +1,53 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { AccountService } from './account-service'
+import { detectCcSwitchAuthPath, listCcSwitchAuthCandidates } from './cc-switch'
+import type { PathsSnapshot } from '@shared/types'
+import {
+  getCodexPathSnapshot,
+  listCodexProcesses,
+  restartCodex,
+  startCodex,
+  stopCodexProcesses
+} from './codex-process'
+import {
+  getLocale,
+  getProxyUrl,
+  getQuotaViewMode,
+  getTheme,
+  isCodexTerminal,
+  mainText,
+  setCcSwitchAuthPath,
+  setCodexExePath,
+  setCodexTerminal,
+  setCodexWorkDir,
+  setLocale,
+  setProxyUrl,
+  setQuotaViewMode,
+  setTheme
+} from './settings'
+import { isUiLocale } from '@shared/i18n'
+import { isThemeMode } from '@shared/theme'
+import { isQuotaViewMode } from '@shared/types'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 app.setName('codex-account-switcher')
 
 const service = new AccountService()
+
+/**
+ * 路徑設定的唯一組裝點。
+ * 所有 paths IPC 都回傳同一份完整快照，renderer 只替換 state，不需要自己合併欄位。
+ */
+function buildPathsSnapshot(): PathsSnapshot {
+  return {
+    ...getCodexPathSnapshot(detectCcSwitchAuthPath() ?? ''),
+    ccSwitchAuthCandidates: listCcSwitchAuthCandidates()
+  }
+}
 
 function getArgValue(flag: string): string | null {
   const idx = process.argv.indexOf(flag)
@@ -71,18 +110,40 @@ function resolvePreload(): string {
   return path.join(base, 'index.js')
 }
 
+function applyThemeSource(): void {
+  try {
+    const mode = getTheme()
+    nativeTheme.themeSource = mode === 'system' ? 'system' : mode === 'dark' ? 'dark' : 'light'
+  } catch {
+    /* 讀不到設定時維持系統預設 */
+  }
+}
+
+function resolveWindowBackground(): string {
+  try {
+    const mode = getTheme()
+    if (mode === 'dark') return '#111418'
+    if (mode === 'light') return '#f3f4f6'
+    return nativeTheme.shouldUseDarkColors ? '#111418' : '#f3f4f6'
+  } catch {
+    return '#f3f4f6'
+  }
+}
+
 function createWindow(): void {
+  applyThemeSource()
   const win = new BrowserWindow({
     width: 1080,
     height: 720,
     minWidth: 980,
     minHeight: 560,
+    backgroundColor: resolveWindowBackground(),
     webPreferences: {
       preload: resolvePreload(),
       contextIsolation: true,
       sandbox: false
     },
-    title: 'Codex 切号器'
+    title: mainText('Codex 切号器')
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -107,16 +168,16 @@ function registerIpc(): void {
 
   ipcMain.handle('accounts:importAuthJsonFile', async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
-    const openOptions = {
-      title: '选择 auth.json 或账号备份 JSON',
+    const openOptions: Electron.OpenDialogOptions = {
+      title: mainText('选择 auth.json 或账号备份 JSON'),
       filters: [{ name: 'JSON', extensions: ['json'] }],
       properties: ['openFile', 'multiSelections']
-    } as const
+    }
     const { canceled, filePaths } = win
       ? await dialog.showOpenDialog(win, openOptions)
       : await dialog.showOpenDialog(openOptions)
     if (canceled || !filePaths[0]) {
-      throw new Error('已取消')
+      throw new Error(mainText('已取消'))
     }
     const importSummary = await service.importAuthJsonFromPaths(filePaths)
     await service.refreshMany(importSummary.accountIds)
@@ -125,16 +186,16 @@ function registerIpc(): void {
 
   ipcMain.handle('accounts:exportAuthJsonFile', async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
-    const openOptions = {
-      title: '选择 JSON 导出目录',
+    const openOptions: Electron.OpenDialogOptions = {
+      title: mainText('选择 JSON 导出目录'),
       defaultPath: app.getPath('documents'),
       properties: ['openDirectory', 'createDirectory']
-    } as const
+    }
     const { canceled, filePaths } = win
       ? await dialog.showOpenDialog(win, openOptions)
       : await dialog.showOpenDialog(openOptions)
     if (canceled || !filePaths[0]) {
-      throw new Error('已取消')
+      throw new Error(mainText('已取消'))
     }
     return service.exportAuthJsonToDirectory(filePaths[0])
   })
@@ -179,6 +240,11 @@ function registerIpc(): void {
     return service.listAccounts()
   })
 
+  ipcMain.handle('accounts:sync', async () => {
+    const summary = await service.syncAccounts()
+    return { ...summary, ...service.listAccounts() }
+  })
+
   ipcMain.handle('accounts:updateNickname', (_e, accountId: string, nickname: string) => {
     service.updateNickname(accountId, nickname)
     return service.listAccounts()
@@ -191,8 +257,102 @@ function registerIpc(): void {
 
   ipcMain.handle('accounts:delete', (_e, accountId: string) => {
     const deleted = service.deleteAccount(accountId)
-    if (!deleted) throw new Error('未找到账号')
+    if (!deleted) throw new Error(mainText('未找到账号'))
     return service.listAccounts()
+  })
+
+  ipcMain.handle('settings:getLocale', () => getLocale())
+
+  ipcMain.handle('settings:setLocale', (_e, locale: unknown) => {
+    if (isUiLocale(locale)) setLocale(locale)
+    return getLocale()
+  })
+
+  ipcMain.handle('settings:getProxyUrl', () => getProxyUrl())
+
+  ipcMain.handle('settings:setProxyUrl', (_e, proxyUrl: unknown) => {
+    return setProxyUrl(typeof proxyUrl === 'string' ? proxyUrl : '')
+  })
+
+  ipcMain.handle('settings:getTheme', () => getTheme())
+
+  ipcMain.handle('settings:setTheme', (_e, mode: unknown) => {
+    if (isThemeMode(mode)) {
+      const saved = setTheme(mode)
+      applyThemeSource()
+      return saved
+    }
+    return getTheme()
+  })
+
+  ipcMain.handle('settings:getQuotaViewMode', () => getQuotaViewMode())
+
+  ipcMain.handle('settings:setQuotaViewMode', (_e, mode: unknown) => {
+    if (isQuotaViewMode(mode)) return setQuotaViewMode(mode)
+    return getQuotaViewMode()
+  })
+
+  ipcMain.handle('paths:get', () => buildPathsSnapshot())
+
+  ipcMain.handle('paths:setCcSwitchAuthPath', (_e, value: unknown) => {
+    setCcSwitchAuthPath(typeof value === 'string' ? value : '')
+    return buildPathsSnapshot()
+  })
+
+  ipcMain.handle('paths:pickCcSwitchAuthPath', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const options: Electron.OpenDialogOptions = {
+      title: mainText('选择 CC-Switch 账号文件'),
+      defaultPath: app.getPath('home'),
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+      properties: ['openFile']
+    }
+    const { canceled, filePaths } = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options)
+    if (!canceled && filePaths[0]) setCcSwitchAuthPath(filePaths[0])
+    return buildPathsSnapshot()
+  })
+
+  ipcMain.handle('paths:setCodexExePath', (_e, value: unknown) => {
+    setCodexExePath(typeof value === 'string' ? value : '')
+    return buildPathsSnapshot()
+  })
+
+  ipcMain.handle('paths:pickCodexExe', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const options: Electron.OpenDialogOptions = {
+      title: mainText('选择 codex 执行文件'),
+      defaultPath: app.getPath('home'),
+      properties: ['openFile']
+    }
+    const { canceled, filePaths } = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options)
+    if (!canceled && filePaths[0]) setCodexExePath(filePaths[0])
+    return buildPathsSnapshot()
+  })
+
+  ipcMain.handle('paths:setCodexWorkDir', (_e, value: unknown) => {
+    setCodexWorkDir(typeof value === 'string' ? value : '')
+    return buildPathsSnapshot()
+  })
+
+  ipcMain.handle('paths:setCodexTerminal', (_e, value: unknown) => {
+    setCodexTerminal(isCodexTerminal(value) ? value : 'auto')
+    return buildPathsSnapshot()
+  })
+
+  ipcMain.handle('codex:listProcesses', () => listCodexProcesses())
+
+  ipcMain.handle('codex:stop', async () => {
+    return stopCodexProcesses()
+  })
+
+  ipcMain.handle('codex:start', () => startCodex())
+
+  ipcMain.handle('codex:restart', async () => {
+    return restartCodex()
   })
 }
 
