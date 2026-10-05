@@ -1,0 +1,133 @@
+/* AnimatedSelect 專用樣式：過度效果與參考實作一致，改這一檔即可統一所有下拉選單 */
+
+.animated-select {
+  position: relative;
+  min-width: 136px;
+  user-select: none;
+}
+
+.animated-select.is-disabled {
+  opacity: 0.55;
+}
+
+.animated-select-trigger {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  transition: box-shadow 0.3s ease, background-color 0.3s ease, border-color 0.3s ease;
+}
+[data-theme='dark'] .animated-select-trigger {
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+}
+
+.animated-select-trigger:hover {
+  background-color: var(--select-hover);
+}
+
+.animated-select-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.animated-select.is-open .animated-select-trigger {
+  background-color: var(--select-hover);
+  border-color: var(--select-border-active);
+  box-shadow: var(--shadow);
+}
+
+.animated-select-trigger.is-disabled {
+  cursor: not-allowed;
+}
+
+.animated-select-value {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.animated-select-arrow {
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 6px solid var(--select-arrow);
+  transition: transform 0.3s ease;
+}
+
+.animated-select.is-open .animated-select-arrow {
+  transform: rotate(180deg);
+}
+
+.animated-select-options {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  z-index: 60;
+  opacity: 0;
+  transform: scaleY(0);
+  transform-origin: top;
+  visibility: hidden;
+  transition: transform 0.3s ease, opacity 0.3s ease, visibility 0.3s;
+}
+
+.animated-select-options.align-right {
+  left: auto;
+  min-width: 100%;
+}
+
+.animated-select.is-open .animated-select-options {
+  opacity: 1;
+  transform: scaleY(1);
+  visibility: visible;
+}
+
+.animated-select-option {
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.animated-select-option:hover,
+.animated-select-option.is-active {
+  background-color: var(--select-active);
+}
+
+.animated-select-option.is-selected {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.animated-select-filter {
+  width: 146px;
+}
+
+.animated-select-view {
+  width: 140px;
+}
+
+.animated-select-locale {
+  width: 116px;
+}
+
+.animated-select-terminal {
+  flex: 1 1 260px;
+  min-width: 200px;
+}
