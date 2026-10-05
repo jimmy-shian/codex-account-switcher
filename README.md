@@ -2,9 +2,9 @@
 
 Codex Account Switcher 是一个面向 Windows 的 Codex切号器、Codex账号切换工具，用来管理多个 ChatGPT 登录型 Codex 账号。它会加密保存每个账号的 `auth.json` 快照，并在切换账号时原子覆盖当前用户的 `%USERPROFILE%\.codex\auth.json`。
 
-除了切号，本工具还整合了 CC-Switch 账号同步、Codex 进程的一键启动/关闭/重启、Proxy 设置、路径自定义与简繁体界面切换。
+除了切号，本工具还整合了 Live 账号汇入、Codex 进程的一键启动/关闭/重启、Proxy 设置、路径自定义与简繁体界面切换。
 
-常见搜索词：Codex切号器、codex切号器、Codex账号切换、codex账号切换、Codex账号切号、codex账号切号、Codex切换账号、codex切换账号、Codex多账号、codex多账号、Codex账号管理、ChatGPT账号切换、OpenAI账号切换、CC-Switch 同步、Codex 一键重启。
+常见搜索词：Codex切号器、codex切号器、Codex账号切换、codex账号切换、Codex账号切号、codex账号切号、Codex切换账号、codex切换账号、Codex多账号、codex多账号、Codex账号管理、ChatGPT账号切换、OpenAI账号切换、Codex 一键重启。
 
 ## 截图
 
@@ -20,12 +20,10 @@ Codex Account Switcher 是一个面向 Windows 的 Codex切号器、Codex账号�
 - 切换账号前自动备份现有 Live `auth.json`。
 - 删除账号有二次确认弹窗，避免误删。
 
-CC-Switch 同步：
+Live 汇入：
 
-- `同步账号` 一键抓取当前 Live `auth.json` 与 CC-Switch 已登录账号，合并进列表后刷新全部额度。
-- CC-Switch 只有 `refresh_token`，导入时会自动补 `access_token` 并写入 codex 可用的 `auth.json` 格式。
-- 自动扫描多个 CC-Switch 版本的账号文件位置，也可在「路径设置」手动指定。
-- 同步结果用一句话汇总（新增/跳过/失败），失败原因最多列出 3 笔。
+- `汇入 Live` 一键抓取当前 Live `auth.json`，合并进列表后刷新全部额度。
+- 所有账号都需经由本工具登录或汇入，不再读取任何第三方账号文件；既有第三方账号请全部重新登录。
 
 额度与状态：
 
@@ -47,7 +45,7 @@ Codex 进程控制：
 
 - 界面语言可切换简体中文 / 繁體中文，选择会写入设置文件，重启后保留。
 - Proxy 设置：填入代理地址后保存，留空表示直连。
-- 「路径设置」可自定义 CC-Switch 账号文件、Codex 执行文件、启动目录与启动终端；留空表示自动检测，并在界面上标出「自动 / 自定义」与实际解析到的路径。
+- 「路径设置」可自定义 Codex 执行文件、启动目录与启动终端；留空表示自动检测，并在界面上标出「自动 / 自定义」与实际解析到的路径。
 - 支持键盘快捷键，输入框内打字不会误触。
 - 点击账号邮箱即可复制到剪贴板。
 
@@ -58,7 +56,7 @@ Codex 进程控制：
 - `额度筛选`：切换全部 / 可用 / 无额度 / 封禁，括号内为该分类的账号数。
 - `界面语言`：切换简体中文 / 繁體中文，主进程对话框与窗口标题也会跟着转换。
 - `添加账号`：启动 Codex app-server 登录流程，并通过浏览器完成授权；登录期间界面会出现提示条，可点「取消登录」结束等待。
-- `同步账号`：抓取当前 Live 与 CC-Switch 已登录账号，并刷新全部额度。
+- `汇入 Live`：抓取当前 Live `auth.json`，并刷新全部额度。
 - `从 JSON 导入`：支持多选标准 `auth.json` 文件；导入后会自动刷新本次导入的账号信息。
 - `导出 JSON`：选择目录后，为每个账号写出一个明文 JSON 文件。
 - `一键预热`：对剩余额度 95% 以上的账号发送一次最小消息，促使额度数据更新。
@@ -73,7 +71,6 @@ Codex 进程控制：
 
 路径设置面板：
 
-- `CC-Switch 账号文件`：留空自动检测；未检测到时会把已扫描的候选位置列出来。
 - `Codex 执行文件`：留空自动检测，找不到时可直接浏览选择。
 - `启动目录`：留空＝用户目录。
 - `启动终端`：自动 / Windows Terminal / cmd 窗口 / 直接执行（无窗口）。
@@ -91,7 +88,7 @@ Codex 进程控制：
 | 快捷键 | 功能 |
 | --- | --- |
 | `Ctrl+Shift+N` | 添加账号 |
-| `Ctrl+Shift+S` | 同步账号（Live + CC-Switch） |
+| `Ctrl+Shift+S` | 汇入 Live 并刷新全部 |
 | `Ctrl+Shift+R` | 一键重启 Codex |
 | `Ctrl+Shift+Q` | 启动 / 关闭 Codex |
 
@@ -113,7 +110,6 @@ resources/             可选放置随包分发的 Codex 可执行文件
 - `src/main/account-service.ts`：账号导入、导出、切换、刷新、预热和删除。
 - `src/main/codex-rpc.ts`：通过 `codex app-server` 做 JSON-RPC 通信。
 - `src/main/codex-process.ts`：列出、启动、关闭与重启 Codex 进程。
-- `src/main/cc-switch.ts`：解析 CC-Switch 的 `codex_oauth_auth.json`。
 - `src/main/settings.ts`：语言、Proxy、路径、启动终端等设置读写。
 - `src/main/paths.ts`：定位 Live `auth.json` 与 Codex 可执行文件。
 - `src/main/crypto-blob.ts`：用 Electron `safeStorage` 加密/解密账号快照。
@@ -128,7 +124,6 @@ resources/             可选放置随包分发的 Codex 可执行文件
 - 应用设置：Electron `userData` 下的 `settings.json`，包含语言、Proxy、路径、启动终端与关闭宽限时间。
 - Live 认证文件：`%USERPROFILE%\.codex\auth.json`。
 - 切换账号前备份：`%USERPROFILE%\.codex\auth.json.bak.<timestamp>`。
-- CC-Switch 账号文件：`codex_oauth_auth.json`，依序扫描 `%CCSWITCH_HOME%`、`%USERPROFILE%\.cc-switch`、`%APPDATA%\com.ccswitch.desktop`、`%LOCALAPPDATA%\com.ccswitch.desktop`、`%APPDATA%\CC-Switch`、`%APPDATA%\cc-switch`、`%LOCALAPPDATA%\CC-Switch`、`%USERPROFILE%\.config\cc-switch`。
 
 本地保存的账号快照使用 Electron `safeStorage` 加密。导出的 JSON 文件是明文凭据，等同账号登录令牌备份，不要提交到 Git、网盘共享目录或聊天窗口。
 
@@ -229,10 +224,6 @@ npm run dev -- --debug-warmup <account-id> --debug-out warmup-debug.json
 
 确认终端中能执行 `codex app-server`，或把可执行文件放入 `resources/` 后重新打包；也可以在「路径设置」的 `Codex 执行文件` 直接指定完整路径。
 
-### 同步账号没有汇入 CC-Switch 的账号
-
-确认「路径设置」里的 `CC-Switch 账号文件` 指向真实的 `codex_oauth_auth.json`。自动检测失败时，面板会列出已扫描的候选位置；也可以设置 `CCSWITCH_HOME` 环境变量指向安装目录后再启动。
-
 ### 账号显示 app-server 失败
 
 通常是 Codex CLI 不可用、登录状态过期、网络失败或 app-server 协议调用失败。可以先刷新单个账号，仍失败再重新登录或重新导入该账号的 `auth.json`。若设置了 Proxy，可先确认 `保存 Proxy` 已生效。
@@ -243,7 +234,7 @@ npm run dev -- --debug-warmup <account-id> --debug-out warmup-debug.json
 
 ### Live 与列表高亮不一致
 
-应用使用稳定指纹匹配 Live `auth.json` 和账号列表。若 token 刷新导致原始指纹变化，列表刷新时会尝试补齐稳定指纹；仍不匹配时可使用 `导入当前 Live` 或 `同步账号`。
+应用使用稳定指纹匹配 Live `auth.json` 和账号列表。若 token 刷新导致原始指纹变化，列表刷新时会尝试补齐稳定指纹；仍不匹配时可使用 `汇入 Live`。
 
 ### safeStorage 不可用
 
@@ -253,6 +244,5 @@ npm run dev -- --debug-warmup <account-id> --debug-out warmup-debug.json
 
 - 加密快照只适合保存在本机应用数据目录。
 - `导出 JSON` 输出的是明文 `auth.json`，请按密钥文件处理。
-- CC-Switch 的 `codex_oauth_auth.json` 同样是明文登录令牌，不要复制到公开目录或提交到仓库。
 - 不要把真实 `auth.json`、导出目录、`.enc` 快照或调试输出提交到仓库。
 - 项目默认忽略构建产物和本地工作记录，发布前仍建议执行一次敏感词扫描。

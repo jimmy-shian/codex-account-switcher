@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { formatReset } from '@shared/quota-summary'
 import type { QuotaViewMode, TFn } from '../types'
 
@@ -7,7 +8,7 @@ export interface QuotaWindowView {
   resetsAt: number | null
 }
 
-export function QuotaProgressBlock({
+export const QuotaProgressBlock = memo(function QuotaProgressBlock({
   label,
   q,
   tone,
@@ -68,4 +69,4 @@ export function QuotaProgressBlock({
       <div className="quota-reset-text" title={resetText}>{resetText}</div>
     </div>
   )
-}
+})

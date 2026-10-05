@@ -168,6 +168,20 @@ body {
   flex-wrap: wrap;
 }
 
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
 .toolbar-title {
   font-weight: 600;
   margin-right: 4px;
@@ -815,6 +829,11 @@ td:nth-child(6) {
   justify-content: flex-end;
 }
 
+.modal-actions-column {
+  flex-direction: column;
+  align-items: stretch;
+}
+
 .empty {
   padding: 48px;
   text-align: center;
@@ -1004,6 +1023,15 @@ td:nth-child(6) {
     gap: 8px;
   }
 
+  .toolbar-left {
+    width: 100%;
+  }
+
+  .toolbar-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
   .animated-select-filter {
     width: 100%;
     order: 2;
@@ -1022,6 +1050,12 @@ td:nth-child(6) {
   .quota-block {
     min-width: 0;
   }
+}
+
+/* 效能：跳過螢幕外表格行的渲染，resize / 最小化還原時只重繪可見行，縮短白屏時間 */
+.table-wrap tbody tr {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 68px;
 }
 
 .global-refreshing-float {

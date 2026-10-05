@@ -40,6 +40,29 @@ function resolveCodexViaWhere(): string | null {
   }
 }
 
+const APPX_CACHE_TTL_MS = 60_000
+let appxCache: { at: number; value: string | null } | null = null
+
+/** 偵測 Windows 官方 Codex 桌面版 UWP / WindowsApps 套件 AppID（帶快取，避免每次 paths:get 都掃目錄） */
+export function resolveCodexAppxPackageId(): string | null {
+  if (process.platform !== 'win32') return null
+  const now = Date.now()
+  if (appxCache && now - appxCache.at < APPX_CACHE_TTL_MS) return appxCache.value
+  let value: string | null = null
+  try {
+    const packagesDir = path.join(os.homedir(), 'AppData', 'Local', 'Packages')
+    if (fs.existsSync(packagesDir)) {
+      const entries = fs.readdirSync(packagesDir)
+      const hit = entries.find((dir) => /^OpenAI\.Codex_/i.test(dir))
+      if (hit) value = `${hit}!App`
+    }
+  } catch {
+    /* ignore */
+  }
+  appxCache = { at: now, value }
+  return value
+}
+
 function resolveOpenAiCodexExe(): string | null {
   const binDir = path.join(os.homedir(), 'AppData', 'Local', 'OpenAI', 'Codex', 'bin')
   const candidates: Array<{ path: string; mtimeMs: number }> = []
@@ -118,8 +141,21 @@ export function resolveSystemCodexExe(): string | null {
   return null
 }
 
+const EXE_CACHE_TTL_MS = 30_000
+let exeCache: { at: number; value: string | null } | null = null
+
 export function resolveCodexExecutable(): string | null {
-  return resolveBundledCodexExe() ?? resolveSystemCodexExe()
+  const now = Date.now()
+  if (exeCache && now - exeCache.at < EXE_CACHE_TTL_MS) return exeCache.value
+  const value = resolveBundledCodexExe() ?? resolveSystemCodexExe()
+  exeCache = { at: now, value }
+  return value
+}
+
+/** 路徑被使用者修改後呼叫，立即失效快取 */
+export function invalidateCodexExeCache(): void {
+  exeCache = null
+  appxCache = null
 }
 
 export function getUserDataAccountsDir(): string {

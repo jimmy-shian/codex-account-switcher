@@ -15,8 +15,6 @@ interface SettingsFile {
   quotaViewMode?: QuotaViewMode
   /** 空字串代表直連，不經 proxy */
   proxyUrl?: string
-  /** 自訂 CC-Switch 帳號檔路徑；空字串代表自動偵測 */
-  ccSwitchAuthPath?: string
   /** 自訂 codex 執行檔路徑；空字串代表自動偵測 */
   codexExePath?: string
   /** 啟動 codex 的工作目錄；空字串代表使用者 home */
@@ -60,7 +58,6 @@ function writeSettings(patch: Partial<SettingsFile>): void {
     theme: isThemeMode(current.theme) ? current.theme : DEFAULT_THEME,
     quotaViewMode: isQuotaViewMode(current.quotaViewMode) ? current.quotaViewMode : DEFAULT_QUOTA_VIEW,
     proxyUrl: typeof current.proxyUrl === 'string' ? current.proxyUrl : DEFAULT_PROXY_URL,
-    ccSwitchAuthPath: typeof current.ccSwitchAuthPath === 'string' ? current.ccSwitchAuthPath : '',
     codexExePath: typeof current.codexExePath === 'string' ? current.codexExePath : '',
     codexWorkDir: typeof current.codexWorkDir === 'string' ? current.codexWorkDir : '',
     codexTerminal: isCodexTerminal(current.codexTerminal) ? current.codexTerminal : 'auto',
@@ -120,18 +117,6 @@ export function setProxyUrl(proxyUrl: string): string {
   return normalized
 }
 
-/** 自訂 CC-Switch 帳號檔路徑；空字串代表自動偵測 */
-export function getCcSwitchAuthPathOverride(): string {
-  const parsed = readSettings()
-  return typeof parsed.ccSwitchAuthPath === 'string' ? parsed.ccSwitchAuthPath.trim() : ''
-}
-
-export function setCcSwitchAuthPath(value: string): string {
-  const normalized = value.trim()
-  writeSettings({ ccSwitchAuthPath: normalized })
-  return normalized
-}
-
 /** 自訂 codex 執行檔路徑；空字串代表自動偵測 */
 export function getCodexExePathOverride(): string {
   const parsed = readSettings()
@@ -181,7 +166,6 @@ export function getCodexStopGraceMs(): number {
 
 /** 一次取齊路徑與啟動設定，讓 IPC 回傳一致的快照 */
 export interface LaunchSettings {
-  ccSwitchAuthPath: string
   codexExePath: string
   codexWorkDir: string
   codexTerminal: CodexTerminal
@@ -190,7 +174,6 @@ export interface LaunchSettings {
 
 export function getLaunchSettings(): LaunchSettings {
   return {
-    ccSwitchAuthPath: getCcSwitchAuthPathOverride(),
     codexExePath: getCodexExePathOverride(),
     codexWorkDir: getCodexWorkDir(),
     codexTerminal: getCodexTerminal(),

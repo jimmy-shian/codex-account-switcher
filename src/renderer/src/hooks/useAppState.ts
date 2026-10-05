@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { UiLocale } from '@shared/i18n'
 import { localize } from '@shared/i18n'
 import { cleanErrorMessage } from '../lib/account-view'
@@ -86,5 +86,9 @@ export function useQuotaOperation(blocked: boolean): {
     setUi({ mode: 'idle' })
   }, [])
 
-  return { ui, running, enter, isActive, exit }
+  // 穩定引用：ui 沒變時回傳同一物件，避免 App 內依賴 quota 的 effect / callback 每 render 重建
+  return useMemo(
+    () => ({ ui, running, enter, isActive, exit }),
+    [ui, running, enter, isActive, exit]
+  )
 }

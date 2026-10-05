@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { UiLocale } from '@shared/i18n'
 import {
   expiryUrgencyClass,
@@ -35,7 +36,7 @@ function SortableHeader({
   )
 }
 
-export function AccountTable({
+export const AccountTable = memo(function AccountTable({
   rows,
   locale,
   sortConfig,
@@ -181,7 +182,7 @@ export function AccountTable({
       </tbody>
     </table>
   )
-}
+})
 
 /** 依 activeId 與刷新狀態組出表格列所需的衍生資料（含最早到期與緊急度） */
 export function buildAccountRows(

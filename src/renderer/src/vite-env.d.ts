@@ -25,21 +25,6 @@ export interface ListResult {
   liveAuthPresent: boolean
 }
 
-/** 同步（Live + CC-Switch + 刷新全部）的統計 */
-export interface SyncSummary {
-  liveImported: boolean
-  liveMissing: boolean
-  ccSwitchPath: string
-  ccSwitchFound: number
-  ccSwitchImported: number
-  ccSwitchSkipped: number
-  ccSwitchFailed: number
-  accountIds: string[]
-  errors: { source: string; message: string }[]
-}
-
-export interface SyncResponse extends ListResult, SyncSummary {}
-
 export interface RefreshLiveResult extends ListResult {
   live: LiveSessionInfo
 }
@@ -66,8 +51,9 @@ declare global {
   interface Window {
     codexSwitcher: {
       listAccounts: () => Promise<ListResult>
-      addViaLogin: () => Promise<ListResult>
+      addViaLogin: (mode?: 'embedded') => Promise<ListResult>
       addViaLoginCancel: () => Promise<void>
+      clearLoginSession: () => Promise<void>
       importAuthJsonFile: () => Promise<ImportAuthJsonResponse>
       exportAuthJsonFile: () => Promise<ExportAuthJsonSummary>
       switchAccount: (accountId: string) => Promise<SwitchResponse>
@@ -77,7 +63,6 @@ declare global {
       warmupOne: (accountId: string) => Promise<WarmupOneResponse>
       refreshLive: () => Promise<RefreshLiveResult>
       importLive: () => Promise<ListResult>
-      syncAccounts: () => Promise<SyncResponse>
       updateNickname: (accountId: string, nickname: string) => Promise<ListResult>
       deleteAccount: (accountId: string) => Promise<ListResult>
       reorderAccounts: (accountIds: string[]) => Promise<ListResult>
@@ -90,8 +75,6 @@ declare global {
       getProxyUrl: () => Promise<string>
       setProxyUrl: (proxyUrl: string) => Promise<string>
       getPaths: () => Promise<PathsSnapshot>
-      setCcSwitchAuthPath: (filePath: string) => Promise<PathsSnapshot>
-      pickCcSwitchAuthPath: () => Promise<PathsSnapshot>
       setCodexExePath: (filePath: string) => Promise<PathsSnapshot>
       pickCodexExe: () => Promise<PathsSnapshot>
       setCodexWorkDir: (dir: string) => Promise<PathsSnapshot>

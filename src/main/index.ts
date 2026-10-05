@@ -3,7 +3,6 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { AccountService } from './account-service'
-import { detectCcSwitchAuthPath, listCcSwitchAuthCandidates } from './cc-switch'
 import type { PathsSnapshot } from '@shared/types'
 import {
   getCodexPathSnapshot,
@@ -19,7 +18,6 @@ import {
   getTheme,
   isCodexTerminal,
   mainText,
-  setCcSwitchAuthPath,
   setCodexExePath,
   setCodexTerminal,
   setCodexWorkDir,
@@ -31,6 +29,7 @@ import {
 import { isUiLocale } from '@shared/i18n'
 import { isThemeMode } from '@shared/theme'
 import { isQuotaViewMode } from '@shared/types'
+import { invalidateCodexExeCache } from './paths'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -43,10 +42,7 @@ const service = new AccountService()
  * 所有 paths IPC 都回傳同一份完整快照，renderer 只替換 state，不需要自己合併欄位。
  */
 function buildPathsSnapshot(): PathsSnapshot {
-  return {
-    ...getCodexPathSnapshot(detectCcSwitchAuthPath() ?? ''),
-    ccSwitchAuthCandidates: listCcSwitchAuthCandidates()
-  }
+  return getCodexPathSnapshot()
 }
 
 function getArgValue(flag: string): string | null {
@@ -138,13 +134,39 @@ function createWindow(): void {
     minWidth: 980,
     minHeight: 560,
     backgroundColor: resolveWindowBackground(),
+    // 先隱藏等首幀 ready-to-show 再顯示，避免啟動 / 還原時的白屏閃爍
+    show: false,
+    autoHideMenuBar: true,
     webPreferences: {
       preload: resolvePreload(),
       contextIsolation: true,
-      sandbox: false
+      sandbox: false,
+      // 背景節流保持預設開啟，縮小視窗時降低渲染開銷
+      backgroundThrottling: true
     },
     title: mainText('Codex 切号器')
   })
+
+  win.once('ready-to-show', () => {
+    try {
+      if (!win.isDestroyed()) win.show()
+    } catch {
+      try {
+        win.show()
+      } catch {
+        /* ignore */
+      }
+    }
+  })
+  // 保險：若 ready-to-show 因載入失敗沒觸發，3s 後強制顯示避免黑窗
+  // 注意：主進程是 Node 環境，沒有 window，用全域 setTimeout
+  setTimeout(() => {
+    try {
+      if (!win.isDestroyed() && !win.isVisible()) win.show()
+    } catch {
+      /* ignore */
+    }
+  }, 3000)
 
   if (process.env.ELECTRON_RENDERER_URL) {
     win.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -157,13 +179,18 @@ function createWindow(): void {
 function registerIpc(): void {
   ipcMain.handle('accounts:list', () => service.listAccounts())
 
-  ipcMain.handle('accounts:addViaLogin', async () => {
-    await service.addViaLogin()
+  ipcMain.handle('accounts:addViaLogin', async (_e, mode?: unknown) => {
+    const normalized = mode === 'external' || mode === 'device' ? mode : 'embedded'
+    await service.addViaLogin(normalized)
     return service.listAccounts()
   })
 
   ipcMain.handle('accounts:addViaLoginCancel', () => {
     service.cancelAddViaLogin()
+  })
+
+  ipcMain.handle('accounts:clearLoginSession', async () => {
+    await service.clearLoginSession()
   })
 
   ipcMain.handle('accounts:importAuthJsonFile', async (e) => {
@@ -240,11 +267,6 @@ function registerIpc(): void {
     return service.listAccounts()
   })
 
-  ipcMain.handle('accounts:sync', async () => {
-    const summary = await service.syncAccounts()
-    return { ...summary, ...service.listAccounts() }
-  })
-
   ipcMain.handle('accounts:updateNickname', (_e, accountId: string, nickname: string) => {
     service.updateNickname(accountId, nickname)
     return service.listAccounts()
@@ -294,28 +316,9 @@ function registerIpc(): void {
 
   ipcMain.handle('paths:get', () => buildPathsSnapshot())
 
-  ipcMain.handle('paths:setCcSwitchAuthPath', (_e, value: unknown) => {
-    setCcSwitchAuthPath(typeof value === 'string' ? value : '')
-    return buildPathsSnapshot()
-  })
-
-  ipcMain.handle('paths:pickCcSwitchAuthPath', async (e) => {
-    const win = BrowserWindow.fromWebContents(e.sender)
-    const options: Electron.OpenDialogOptions = {
-      title: mainText('选择 CC-Switch 账号文件'),
-      defaultPath: app.getPath('home'),
-      filters: [{ name: 'JSON', extensions: ['json'] }],
-      properties: ['openFile']
-    }
-    const { canceled, filePaths } = win
-      ? await dialog.showOpenDialog(win, options)
-      : await dialog.showOpenDialog(options)
-    if (!canceled && filePaths[0]) setCcSwitchAuthPath(filePaths[0])
-    return buildPathsSnapshot()
-  })
-
   ipcMain.handle('paths:setCodexExePath', (_e, value: unknown) => {
     setCodexExePath(typeof value === 'string' ? value : '')
+    invalidateCodexExeCache()
     return buildPathsSnapshot()
   })
 
@@ -329,7 +332,10 @@ function registerIpc(): void {
     const { canceled, filePaths } = win
       ? await dialog.showOpenDialog(win, options)
       : await dialog.showOpenDialog(options)
-    if (!canceled && filePaths[0]) setCodexExePath(filePaths[0])
+    if (!canceled && filePaths[0]) {
+      setCodexExePath(filePaths[0])
+      invalidateCodexExeCache()
+    }
     return buildPathsSnapshot()
   })
 

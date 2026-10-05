@@ -34,9 +34,10 @@ export function LiveBanner({
 }
 
 export function LoginWaitHint({ onCancel, t }: { onCancel: () => void; t: TFn }) {
+  const hint = t('已清除旧登录记录并在内建窗口打开登录页，完成登录后会自动加入账号；未完成可点「取消登录」结束等待。')
   return (
     <div className="path-hint login-wait-hint">
-      {t('已在内建窗口打开登录页，完成登录后会自动加入账号；未完成可点「取消登录」结束等待。')}
+      {hint}
       <button type="button" className="btn btn-sm btn-ghost login-cancel-btn" onClick={onCancel}>
         {t('取消登录')}
       </button>

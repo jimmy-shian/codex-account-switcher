@@ -25,7 +25,7 @@ export interface QuotaCredits {
   hasCredits?: boolean
   unlimited?: boolean
   balance?: number | null
-  /** CC-Switch 額外視窗資料，欄位為 snake_case，實際解析在 quota-map 內以寬鬆型別處理 */
+  /** 第三方額外視窗資料，欄位為 snake_case，實際解析在 quota-map 內以寬鬆型別處理 */
   _codexmanager_extra_rate_limits?: unknown[]
 }
 
@@ -131,9 +131,6 @@ export interface CodexProcessInfo {
  * 所有 paths IPC 都回傳這份完整快照，renderer 只替換 state 即可。
  */
 export interface PathsSnapshot {
-  ccSwitchAuthPathOverride: string
-  ccSwitchAuthPathResolved: string
-  ccSwitchAuthCandidates: string[]
   codexExePathOverride: string
   codexExePathResolved: string
   codexWorkDir: string
@@ -143,8 +140,8 @@ export interface PathsSnapshot {
   codexStopGraceMs: number
 }
 
-/** main 端在候選清單由 index.ts 補上之前可取得的欄位 */
-export type CodexPathSnapshot = Omit<PathsSnapshot, 'ccSwitchAuthCandidates'>
+/** 路徑快照別名，與 PathsSnapshot 同步 */
+export type CodexPathSnapshot = PathsSnapshot
 
 /** 額度顯示模式：百分比 / 倒數 / 兩者並存 */
 export type QuotaViewMode = 'percent' | 'countdown' | 'both'
@@ -162,7 +159,7 @@ export interface CodexStopResult {
 export interface CodexLaunchResult {
   launched: boolean
   /** 實際使用的啟動方式 */
-  via: CodexTerminal | 'bundled' | null
+  via: CodexTerminal | 'bundled' | 'appx' | null
   exePath: string
   workDir: string
   pid: number | null

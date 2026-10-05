@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import { BrowserWindow, clipboard, dialog } from 'electron'
+import { BrowserWindow, clipboard, dialog, session, shell } from 'electron'
 import fs from 'fs'
 import https from 'https'
 import net from 'net'
@@ -25,13 +25,15 @@ import { getQuotaDisplayWindows } from '@shared/quota-summary'
 import { atomicWriteAuthJson, backupLiveAuthIfExists } from './auth-atomic'
 import { readEncryptedBlob, writeEncryptedBlob } from './crypto-blob'
 import { CodexRpcClient } from './codex-rpc'
-import { readCcSwitchAccounts, toCodexAuthContent, type CcSwitchAccount } from './cc-switch'
 import { fingerprintFromAuthContent, stableFingerprintFromAuthContent } from './fingerprint'
 import { mapRateLimitsToSnapshot, mapTokenCountRateLimitsToSnapshot, mapUsagePayloadToSnapshot } from './quota-map'
 import { blobPathForRef, getAccountsJsonPath, getCodexDir, getLiveAuthPath, resolveCodexExecutable } from './paths'
-import { getCcSwitchAuthPathOverride, getProxyUrl } from './settings'
+import { getProxyUrl, mainText } from './settings'
 
 const LOGIN_TIMEOUT_MS = 15 * 60 * 1000
+/** 內嵌登入窗的 session 分區；Google 帳號殘留就卡在這裡 */
+export const LOGIN_PARTITION = 'persist:codex-login'
+export type LoginMode = 'embedded' | 'external' | 'device'
 const AUTH_JSON_EXPORT_TYPE = 'codex-account-switcher-export'
 const AUTH_JSON_EXPORT_VERSION = 1
 const IMPORTED_JSON_EMAIL_PLACEHOLDER = '（JSON 导入，刷新后显示邮箱）'
@@ -181,22 +183,6 @@ function isUnauthorizedRefreshError(error: unknown): boolean {
 
 function statusFromRefreshError(error: unknown): AccountStatus {
   return isUnauthorizedRefreshError(error) ? 'unauthorized' : 'app_server_failed'
-}
-
-/** 匯入外部登入來源（Live、CC-Switch）的結果統計 */
-export interface ExternalAccountImportSummary {
-  /** Live auth.json 是否成功匯入 */
-  liveImported: boolean
-  /** 找不到 Live auth.json，不是錯誤 */
-  liveMissing: boolean
-  ccSwitchPath: string
-  ccSwitchFound: number
-  ccSwitchImported: number
-  ccSwitchSkipped: number
-  ccSwitchFailed: number
-  /** 匯入後需要刷新的帳號 id（新增或已更新 token 的） */
-  accountIds: string[]
-  errors: { source: string; message: string }[]
 }
 
 function emptyImportAuthJsonSummary(files = 0): ImportAuthJsonSummary {
@@ -1179,6 +1165,7 @@ export class AccountService {
     this.closeLoginWindow()
     const s = this.loginSession
     if (!s) return
+    this.loginSession = null
     try {
       s.client.dispose()
     } catch {
@@ -1197,6 +1184,32 @@ export class AccountService {
     }
   }
 
+  /** 清掉內嵌登入窗的 cookie / 快取，下次登入 Google 就會重新給選帳號 */
+  async clearLoginSession(): Promise<void> {
+    const ses = session.fromPartition(LOGIN_PARTITION)
+    try {
+      await ses.clearStorageData({
+        storages: [
+          'cookies',
+          'filesystem',
+          'indexdb',
+          'localstorage',
+          'shadercache',
+          'websql',
+          'serviceworkers',
+          'cachestorage'
+        ]
+      })
+    } catch {
+      /* 舊版 Electron 不認部分 storage 名稱時忽略，繼續清快取 */
+    }
+    try {
+      await ses.clearCache()
+    } catch {
+      /* */
+    }
+  }
+
   /** 在應用程式內開啟登入頁，避免切換到外部瀏覽器 */
   private openEmbeddedLoginWindow(authUrl: string): void {
     this.closeLoginWindow()
@@ -1204,19 +1217,72 @@ export class AccountService {
       width: 520,
       height: 760,
       title: 'Codex 登入',
+      show: false,
+      backgroundColor: '#ffffff',
       autoHideMenuBar: true,
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
-        partition: 'persist:codex-login'
+        spellcheck: false,
+        backgroundThrottling: false,
+        partition: LOGIN_PARTITION
       }
     })
     this.loginWindow = win
     win.on('closed', () => {
       if (this.loginWindow === win) this.loginWindow = null
+      // 使用者中途關窗：中止登入等待，讓 addViaLogin 立即以「已取消登录」結束
+      if (this.loginSession) {
+        const s = this.loginSession
+        this.loginSession = null
+        try {
+          s.client.dispose()
+        } catch {
+          /* */
+        }
+      }
+    })
+    // 先顯示空白窗再載入，避免 OAuth 大頁面載入時主視窗跟著凍結感
+    win.once('ready-to-show', () => {
+      try {
+        if (!win.isDestroyed()) {
+          win.show()
+          win.focus()
+        }
+      } catch {
+        /* */
+      }
     })
     win.loadURL(authUrl).catch(() => {
       /* 載入失敗時仍可改用外部瀏覽器重試 */
+      try {
+        if (!win.isDestroyed()) win.show()
+      } catch {
+        /* */
+      }
+    })
+  }
+
+  /** 用系統瀏覽器開啟登入頁，完全不受內嵌窗殘留帳號影響，也不佔內嵌渲染資源 */
+  private async openExternalLoginWindow(authUrl: string): Promise<void> {
+    this.closeLoginWindow()
+    try {
+      clipboard.writeText(authUrl)
+    } catch {
+      /* */
+    }
+    try {
+      await shell.openExternal(authUrl)
+    } catch {
+      /* 打不開時使用者仍可從剪貼簿手動貼上 */
+    }
+    await dialog.showMessageBox({
+      type: 'info',
+      title: mainText('已用外部浏览器打开登录页'),
+      message: mainText('已用系统浏览器打开登录页，登录链接也已复制到剪贴簿。'),
+      detail:
+        `${mainText('完成登录后本工具会自动加入帐号；若浏览器没跳转，请手动贴上链接。')}\n\n` +
+        `${mainText('登录链接已复制，建议用无痕视窗开启以便切换 Google 帐号。')}`
     })
   }
 
@@ -1629,7 +1695,7 @@ export class AccountService {
     return { accounts: store.accounts, activeAccountId, liveAuthPresent }
   }
 
-  async addViaLogin(): Promise<SavedAccount> {
+  async addViaLogin(mode: LoginMode = 'embedded'): Promise<SavedAccount> {
     const codex = resolveCodexExecutable()
     if (!codex) {
       throw new Error(
@@ -1644,33 +1710,69 @@ export class AccountService {
       client = new CodexRpcClient(codex, home, { proxyUrl: getProxyUrl() || null })
       this.loginSession = { client, home }
       await client.start()
-      let loginId: string
-      try {
-        const webLogin = await client.loginWithChatgpt()
-        loginId = webLogin.loginId
-        this.openEmbeddedLoginWindow(webLogin.authUrl)
-      } catch (e) {
-        if (!shouldUseDeviceCodeLogin(e)) throw e
-
+      // 裝置碼模式：直接走 device code，不經內嵌窗殘留帳號，外部瀏覽器無痕開最乾淨
+      if (mode === 'device') {
         const deviceLogin = await client.loginWithChatgptDeviceCode()
-        loginId = deviceLogin.loginId
-        clipboard.writeText(deviceLogin.userCode)
-        this.openEmbeddedLoginWindow(deviceLogin.verificationUrl)
+        try {
+          clipboard.writeText(deviceLogin.userCode)
+        } catch {
+          /* */
+        }
+        try {
+          await shell.openExternal(deviceLogin.verificationUrl)
+        } catch {
+          this.openEmbeddedLoginWindow(deviceLogin.verificationUrl)
+        }
         await dialog.showMessageBox({
           type: 'info',
-          title: '切换到设备码登录',
-          message: '本地登录端口被占用，已切换到设备码登录。',
+          title: '设备码登录',
+          message: '已用外部浏览器打开验证页，验证码已复制到剪贴板。',
           detail:
-            `已在内建窗口打开登录页面，并将验证码复制到剪贴板。\n\n` +
+            `请在浏览器（建议无痕窗口）完成登录，以便切换 Google 账号。\n\n` +
             `验证码: ${deviceLogin.userCode}\n` +
             `登录地址: ${deviceLogin.verificationUrl}`
         })
-      }
-      const done = await client.waitLoginCompleted(loginId, LOGIN_TIMEOUT_MS)
-      this.loginSession = null
-      this.closeLoginWindow()
-      if (!done.success) {
-        throw new Error(done.error || '登录失败')
+        const done = await client.waitLoginCompleted(deviceLogin.loginId, LOGIN_TIMEOUT_MS)
+        this.loginSession = null
+        this.closeLoginWindow()
+        if (!done.success) {
+          throw new Error(done.error || '登录失败')
+        }
+      } else {
+        let loginId: string
+        try {
+          const webLogin = await client.loginWithChatgpt()
+          loginId = webLogin.loginId
+          if (mode === 'external') {
+            await this.openExternalLoginWindow(webLogin.authUrl)
+          } else {
+            // 內嵌模式每次先清殘留，Google 才會重新給選帳號，也順便清掉肥大的快取
+            await this.clearLoginSession()
+            this.openEmbeddedLoginWindow(webLogin.authUrl)
+          }
+        } catch (e) {
+          if (!shouldUseDeviceCodeLogin(e)) throw e
+
+          const deviceLogin = await client.loginWithChatgptDeviceCode()
+          loginId = deviceLogin.loginId
+          clipboard.writeText(deviceLogin.userCode)
+          this.openEmbeddedLoginWindow(deviceLogin.verificationUrl)
+          await dialog.showMessageBox({
+            type: 'info',
+            title: '切换到设备码登录',
+            message: '本地登录端口被占用，已切换到设备码登录。',
+            detail:
+              `已在内建窗口打开登录页面，并将验证码复制到剪贴板。\n\n` +
+              `验证码: ${deviceLogin.userCode}\n` +
+              `登录地址: ${deviceLogin.verificationUrl}`
+          })
+        }
+        const done = await client.waitLoginCompleted(loginId!, LOGIN_TIMEOUT_MS)
+        this.loginSession = null
+        this.closeLoginWindow()
+        if (!done.success) {
+          throw new Error(done.error || '登录失败')
+        }
       }
       const readRes = await client.readAccount(false)
       const { email, planType } = parseChatgptAccount(readRes)
@@ -2273,89 +2375,6 @@ export class AccountService {
       /* 刷新失敗時仍保留已匯入的帳號，讓使用者可手動重試 */
     }
     return result.accountId
-  }
-
-  /**
-   * 匯入 CC-Switch 已登入的所有 Codex 帳號。
-   * CC-Switch 只存 refresh_token，先換成 access_token 再寫入本機帳號庫。
-   */
-  private async importCcSwitchAccounts(summary: ExternalAccountImportSummary): Promise<void> {
-    const result = readCcSwitchAccounts(getCcSwitchAuthPathOverride())
-    summary.ccSwitchPath = result.filePath
-    if (result.missing) return
-
-    summary.ccSwitchFound = result.accounts.length
-    for (const account of result.accounts) {
-      try {
-        const { accountId, outcome } = await this.importCcSwitchAccount(account)
-        if (outcome === 'skipped') {
-          summary.ccSwitchSkipped += 1
-        } else {
-          summary.ccSwitchImported += 1
-          summary.accountIds.push(accountId)
-        }
-      } catch (e) {
-        summary.ccSwitchFailed += 1
-        summary.errors.push({
-          source: account.email ?? account.accountId,
-          message: messageFromUnknown(e)
-        })
-      }
-    }
-  }
-
-  private async importCcSwitchAccount(
-    account: CcSwitchAccount
-  ): Promise<{ accountId: string; outcome: ImportPlainOutcome }> {
-    const draft = toCodexAuthContent(account)
-    // access_token 留空時必須先換 token，否則匯入的帳號無法讀取額度
-    const { content } = await refreshAuthContentAccessToken(draft)
-    return this.importAuthPlainContent(
-      content,
-      `（CC-Switch，刷新后显示邮箱）`,
-      account.email ? { email: account.email } : undefined
-    )
-  }
-
-  /**
-   * 合併「匯入目前 Live」與「重新整理」：抓取 Live 與 CC-Switch 已登入帳號，再刷新全部額度。
-   * 單一來源失敗不影響其他來源，失敗原因寫在 errors 內回傳給畫面。
-   */
-  async syncAccounts(): Promise<ExternalAccountImportSummary> {
-    const summary: ExternalAccountImportSummary = {
-      liveImported: false,
-      liveMissing: false,
-      ccSwitchPath: '',
-      ccSwitchFound: 0,
-      ccSwitchImported: 0,
-      ccSwitchSkipped: 0,
-      ccSwitchFailed: 0,
-      accountIds: [],
-      errors: []
-    }
-
-    const livePath = getLiveAuthPath()
-    if (!fs.existsSync(livePath)) {
-      summary.liveMissing = true
-    } else {
-      try {
-        const content = fs.readFileSync(livePath, 'utf8')
-        const result = await this.importAuthPlainContent(content, '（已导入 Live，刷新后显示邮箱）')
-        summary.liveImported = true
-        summary.accountIds.push(result.accountId)
-      } catch (e) {
-        summary.errors.push({ source: 'live', message: messageFromUnknown(e) })
-      }
-    }
-
-    try {
-      await this.importCcSwitchAccounts(summary)
-    } catch (e) {
-      summary.errors.push({ source: 'cc-switch', message: messageFromUnknown(e) })
-    }
-
-    await this.refreshAll()
-    return summary
   }
 
   async importAuthJsonFromPath(filePath: string): Promise<ImportAuthJsonSummary> {

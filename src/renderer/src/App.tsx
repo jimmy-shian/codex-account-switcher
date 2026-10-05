@@ -15,7 +15,6 @@ import { useHotkeys } from './hooks/useHotkeys'
 import { usePaths } from './hooks/usePaths'
 import { useTheme } from './hooks/useTheme'
 import { cleanErrorMessage, countByQuotaFilter, importSummaryText, matchesQuotaFilter } from './lib/account-view'
-import { syncSummaryText } from './lib/sync-summary'
 import type { DeleteTarget, QuotaFilterValue, SortConfig, SortField, WarmupConfirmTarget } from './types'
 import type { ListResult } from './vite-env'
 
@@ -53,7 +52,7 @@ export default function App() {
     } catch (e) {
       showError(e)
     }
-  }, [paths, showError, showToast, t])
+  }, [paths.restart, showError, showToast, t])
 
   /** 依目前狀態決定啟動或關閉，與工具列按鈕共用同一個動作 */
   const onToggleCodex = useCallback(async () => {
@@ -62,17 +61,17 @@ export default function App() {
     } catch (e) {
       showError(e)
     }
-  }, [paths, showError, showToast, t])
+  }, [paths.toggle, showError, showToast, t])
 
-  // onSync / onAdd 定義在下方，用 ref 讓快捷鍵能呼叫最新版本
-  const onSyncRef = useRef<() => void>(() => {})
+  // onImportLive / onAdd 定義在下方，用 ref 讓快捷鍵能呼叫最新版本
+  const onImportLiveRef = useRef<() => void>(() => {})
   const onAddRef = useRef<() => void>(() => {})
 
-  // Ctrl+Shift+R 重啟、Q 啟動/關閉切換、S 同步、N 新增
+  // Ctrl+Shift+R 重啟、Q 啟動/關閉切換、S 匯入 Live、N 新增
   useHotkeys({
     r: () => void onRestartCodex(),
     q: () => void onToggleCodex(),
-    s: () => onSyncRef.current(),
+    s: () => onImportLiveRef.current(),
     n: () => onAddRef.current()
   })
 
@@ -235,7 +234,7 @@ export default function App() {
     try {
       const saved = await window.codexSwitcher.setProxyUrl(proxyUrl)
       setProxyUrl(saved)
-      showToast(saved ? t(`已儲存 Proxy：${saved}`) : t('已设为直连（不使用 Proxy）'))
+      showToast(saved ? t(`已存储 Proxy：${saved}`) : t('已设为直连（不使用 Proxy）'))
     } catch (e) {
       showError(e)
     } finally {
@@ -246,7 +245,7 @@ export default function App() {
   const onAdd = async () => {
     setLoginInProgress(true)
     try {
-      const r = await window.codexSwitcher.addViaLogin()
+      const r = await window.codexSwitcher.addViaLogin('embedded')
       applyListState(r)
       showToast(t('账号已添加'))
     } catch (e) {
@@ -258,16 +257,19 @@ export default function App() {
     }
   }
 
-  /** 合併按鈕：匯入 Live 與 CC-Switch 已登入帳號，再刷新全部額度 */
-  const onSync = async () => {
+  /** 匯入目前 Live auth.json，再刷新全部額度 */
+  const onImportLive = async () => {
     const operationId = quota.enter({ mode: 'all' })
     if (operationId == null) return
     try {
-      const r = await window.codexSwitcher.syncAccounts()
+      const r = await window.codexSwitcher.importLive()
       if (!quota.isActive(operationId)) return
       applyListState(r)
+      const r2 = await window.codexSwitcher.refreshAll()
+      if (!quota.isActive(operationId)) return
+      applyListState(r2)
       setLiveInfo(null)
-      showToast(syncSummaryText(r, t))
+      showToast(t('已汇入 Live 并刷新全部'))
     } catch (e) {
       if (quota.isActive(operationId)) showError(e)
     } finally {
@@ -330,30 +332,36 @@ export default function App() {
     }
   }
 
-  const onSwitch = async (id: string) => {
-    try {
-      const r = await window.codexSwitcher.switchAccount(id)
-      applyListState(r)
-      showToast(`${t('已切换。')}${t(r.warning)}`)
-    } catch (e) {
-      showError(e)
-    }
-  }
+  const onSwitch = useCallback(
+    async (id: string) => {
+      try {
+        const r = await window.codexSwitcher.switchAccount(id)
+        applyListState(r)
+        showToast(`${t('已切换。')}${t(r.warning)}`)
+      } catch (e) {
+        showError(e)
+      }
+    },
+    [applyListState, showError, showToast, t]
+  )
 
-  const onRefreshRow = async (id: string) => {
-    const operationId = quota.enter({ mode: 'row', accountId: id })
-    if (operationId == null) return
-    try {
-      const r = await window.codexSwitcher.refreshOne(id)
-      if (!quota.isActive(operationId)) return
-      applyListState(r)
-      showToast(t('已刷新该账号额度'))
-    } catch (e) {
-      if (quota.isActive(operationId)) showError(e)
-    } finally {
-      quota.exit(operationId)
-    }
-  }
+  const onRefreshRow = useCallback(
+    async (id: string) => {
+      const operationId = quota.enter({ mode: 'row', accountId: id })
+      if (operationId == null) return
+      try {
+        const r = await window.codexSwitcher.refreshOne(id)
+        if (!quota.isActive(operationId)) return
+        applyListState(r)
+        showToast(t('已刷新该账号额度'))
+      } catch (e) {
+        if (quota.isActive(operationId)) showError(e)
+      } finally {
+        quota.exit(operationId)
+      }
+    },
+    [applyListState, quota, showError, showToast, t]
+  )
 
   const onWarmupRow = async (id: string) => {
     const operationId = quota.enter({ mode: 'rowWarmup', accountId: id }, { force: true })
@@ -393,16 +401,38 @@ export default function App() {
     }
   }
 
-  const onCopyEmail = (email: string) => {
-    void navigator.clipboard.writeText(email)
-    showToast(t('已复制账号：') + email)
-  }
+  const onCopyEmail = useCallback(
+    (email: string) => {
+      void navigator.clipboard.writeText(email)
+      showToast(t('已复制账号：') + email)
+    },
+    [showToast, t]
+  )
 
-  const onSort = (field: SortField) => {
+  const onSort = useCallback((field: SortField) => {
     setSortConfig((c) => ({ field, dir: c?.field === field && c.dir === 'asc' ? 'desc' : 'asc' }))
-  }
+  }, [])
 
-  onSyncRef.current = () => void onSync()
+  const onSwitchCb = useCallback((id: string) => void onSwitch(id), [onSwitch])
+  const onRefreshRowCb = useCallback((id: string) => void onRefreshRow(id), [onRefreshRow])
+  const onWarmupRowCb = useCallback(
+    (id: string, email: string) => setWarmupConfirm({ mode: 'row', accountId: id, email }),
+    []
+  )
+  const onDeleteCb = useCallback((id: string, email: string) => setDeleteTarget({ id, email }), [])
+
+  const onTogglePathSettings = useCallback(() => paths.setOpen(!paths.open), [paths.setOpen, paths.open])
+  const onPickCodexExe = useCallback(() => void paths.pickCodexExe(), [paths.pickCodexExe])
+  const onCommitCodexExe = useCallback((value: string) => void paths.commitCodexExe(value), [paths.commitCodexExe])
+  const onCommitWorkDir = useCallback((value: string) => void paths.commitWorkDir(value), [paths.commitWorkDir])
+  const onChangeTerminal = useCallback(
+    (value: Parameters<typeof paths.changeTerminal>[0]) => void paths.changeTerminal(value),
+    [paths.changeTerminal]
+  )
+  const onRestartCodexCb = useCallback(() => void onRestartCodex(), [onRestartCodex])
+  const onToggleCodexCb = useCallback(() => void onToggleCodex(), [onToggleCodex])
+
+  onImportLiveRef.current = () => void onImportLive()
   onAddRef.current = () => void onAdd()
 
   return (
@@ -416,15 +446,12 @@ export default function App() {
         onChangeFilter={setQuotaFilter}
         onOpenSettings={() => setSettingsOpen(true)}
         onAdd={() => void onAdd()}
-        onSync={() => void onSync()}
+        onImportLive={() => void onImportLive()}
         onImportAuthJson={() => void onImportAuthJson()}
         onExportAuthJson={() => void onExportAuthJson()}
         onWarmup={() => setWarmupConfirm({ mode: 'batch' })}
       />
       <PathSettings
-        ccSwitchOverride={paths.paths.ccSwitchAuthPathOverride}
-        ccSwitchResolved={paths.paths.ccSwitchAuthPathResolved}
-        ccSwitchCandidates={paths.paths.ccSwitchAuthCandidates}
         codexExeOverride={paths.paths.codexExePathOverride}
         codexExeResolved={paths.paths.codexExePathResolved}
         codexWorkDir={paths.paths.codexWorkDir}
@@ -434,15 +461,13 @@ export default function App() {
         running={paths.running}
         busy={paths.busy}
         t={t}
-        onToggle={() => paths.setOpen(!paths.open)}
-        onPickCcSwitch={() => void paths.pickCcSwitch()}
-        onCommitCcSwitch={(value) => void paths.commitCcSwitch(value)}
-        onPickCodexExe={() => void paths.pickCodexExe()}
-        onCommitCodexExe={(value) => void paths.commitCodexExe(value)}
-        onCommitWorkDir={(value) => void paths.commitWorkDir(value)}
-        onChangeTerminal={(value) => void paths.changeTerminal(value)}
-        onRestart={() => void onRestartCodex()}
-        onToggleCodex={() => void onToggleCodex()}
+        onToggle={onTogglePathSettings}
+        onPickCodexExe={onPickCodexExe}
+        onCommitCodexExe={onCommitCodexExe}
+        onCommitWorkDir={onCommitWorkDir}
+        onChangeTerminal={onChangeTerminal}
+        onRestart={onRestartCodexCb}
+        onToggleCodex={onToggleCodexCb}
       />
       {loginInProgress ? (
         <LoginWaitHint onCancel={() => void window.codexSwitcher.addViaLoginCancel()} t={t} />
@@ -462,10 +487,10 @@ export default function App() {
             nowSec={nowSec}
             t={t}
             onSort={onSort}
-            onSwitch={(id) => void onSwitch(id)}
-            onRefreshRow={(id) => void onRefreshRow(id)}
-            onWarmupRow={(id, email) => setWarmupConfirm({ mode: 'row', accountId: id, email })}
-            onDelete={(id, email) => setDeleteTarget({ id, email })}
+            onSwitch={onSwitchCb}
+            onRefreshRow={onRefreshRowCb}
+            onWarmupRow={onWarmupRowCb}
+            onDelete={onDeleteCb}
             onCopyEmail={onCopyEmail}
           />
         )}

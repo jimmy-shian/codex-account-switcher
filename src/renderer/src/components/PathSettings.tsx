@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { CodexProcessInfo, CodexTerminal } from '@shared/types'
 import type { TFn } from '../types'
 import { AnimatedSelect, type AnimatedSelectOption } from './AnimatedSelect'
@@ -88,29 +88,26 @@ function PathRow({
         <button
           type="button"
           className="btn btn-sm btn-ghost path-auto-reset"
-          title={t('清除自定義，恢復自動偵測')}
+          title={t('清除自定义，恢复自动侦测')}
           onClick={() => {
             setDraft('')
             onCommit('')
           }}
         >
-          {t('重設為自動')}
+          {t('重置为自动')}
         </button>
       ) : null}
       <span
         className={`path-mode-pill ${isMissing ? 'pill pill-warn' : isAuto ? 'pill pill-neutral' : 'pill pill-ok'}`}
         title={display || emptyHint}
       >
-        {isMissing ? t('未偵測到') : isAuto ? t('自動') : t('自定義')}
+        {isMissing ? t('未检测到') : isAuto ? t('自动') : t('自定义')}
       </span>
     </div>
   )
 }
 
-export function PathSettings({
-  ccSwitchOverride,
-  ccSwitchResolved,
-  ccSwitchCandidates,
+export const PathSettings = memo(function PathSettings({
   codexExeOverride,
   codexExeResolved,
   codexWorkDir,
@@ -120,8 +117,6 @@ export function PathSettings({
   running,
   t,
   onToggle,
-  onPickCcSwitch,
-  onCommitCcSwitch,
   onPickCodexExe,
   onCommitCodexExe,
   onCommitWorkDir,
@@ -130,9 +125,6 @@ export function PathSettings({
   onToggleCodex,
   busy
 }: {
-  ccSwitchOverride: string
-  ccSwitchResolved: string
-  ccSwitchCandidates: string[]
   codexExeOverride: string
   codexExeResolved: string
   codexWorkDir: string
@@ -143,8 +135,6 @@ export function PathSettings({
   running: CodexProcessInfo[]
   t: TFn
   onToggle: () => void
-  onPickCcSwitch: () => void
-  onCommitCcSwitch: (value: string) => void
   onPickCodexExe: () => void
   onCommitCodexExe: (value: string) => void
   onCommitWorkDir: (value: string) => void
@@ -154,10 +144,15 @@ export function PathSettings({
   onToggleCodex: () => void
   busy: boolean
 }) {
-  const terminalOptions: AnimatedSelectOption<CodexTerminal>[] = TERMINAL_OPTIONS.map((item) => ({
-    value: item,
-    label: t(TERMINAL_LABELS[item])
-  }))
+  const terminalOptions: AnimatedSelectOption<CodexTerminal>[] = useMemo(
+    () =>
+      TERMINAL_OPTIONS.map((item) => ({
+        value: item,
+        label: t(TERMINAL_LABELS[item])
+      })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [t]
+  )
 
   const isRunning = running.length > 0
 
@@ -184,7 +179,7 @@ export function PathSettings({
           disabled={busy}
           title={t('关闭运行中的 Codex，再用新账号重新启动（Ctrl+Shift+R）')}
         >
-          {t('一键重啟 Codex')} (Ctrl+Shift+R)
+          {t('一键重启 Codex')} (Ctrl+Shift+R)
         </button>
         <button
           type="button"
@@ -205,15 +200,6 @@ export function PathSettings({
       >
         <div className="path-settings-body-inner">
           <div className="path-settings-body">
-            <PathRow
-              label={t('CC-Switch 账号文件')}
-              override={ccSwitchOverride}
-              resolved={ccSwitchResolved}
-              emptyHint={t('未检测到，请浏览选择…')}
-              onPick={onPickCcSwitch}
-              onCommit={onCommitCcSwitch}
-              t={t}
-            />
             <PathRow
               label={t('Codex 执行文件')}
               override={codexExeOverride}
@@ -242,18 +228,12 @@ export function PathSettings({
                 onChange={onChangeTerminal}
               />
             </div>
-            {!ccSwitchResolved ? (
-              <p className="path-note">
-                {t('未检测到 CC-Switch 账号文件。已扫描的候选位置：')}
-                {ccSwitchCandidates.join('、') || '—'}
-              </p>
-            ) : null}
           </div>
         </div>
       </div>
     </section>
   )
-}
+})
 
 function WorkDirInput({
   override,
@@ -312,20 +292,20 @@ function WorkDirInput({
         <button
           type="button"
           className="btn btn-sm btn-ghost path-auto-reset"
-          title={t('清除自定義，恢復自動（使用者目錄）')}
+          title={t('清除自定义，恢复自动（用户目录）')}
           onClick={() => {
             setDraft('')
             onCommit('')
           }}
         >
-          {t('重設為自動')}
+          {t('重置为自动')}
         </button>
       ) : null}
       <span
         className={`path-mode-pill ${isAuto ? 'pill pill-neutral' : 'pill pill-ok'}`}
         title={display}
       >
-        {isAuto ? t('自動') : t('自定義')}
+        {isAuto ? t('自动') : t('自定义')}
       </span>
     </>
   )
