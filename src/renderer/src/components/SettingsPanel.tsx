@@ -82,12 +82,12 @@ export function SettingsPanel({
                   checked={themeMode === m}
                   onChange={() => onChangeTheme(m)}
                 />
-                <span>{t(themeModeLabel(m, 'zh-CN'))}</span>
+                <span>{themeModeLabel(m, locale)}</span>
               </label>
             ))}
           </div>
           <div className="settings-hint">
-            {t('目前系統為')} {systemDark ? t('深色') : t('浅色')}，{t('實際顯示')} {resolved === 'dark' ? t('深色') : t('浅色')}
+            {t('目前系统为')} {systemDark ? t('深色') : t('浅色')}，{t('实际显示')} {resolved === 'dark' ? t('深色') : t('浅色')}
           </div>
         </div>
 

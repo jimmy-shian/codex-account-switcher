@@ -1,4 +1,3 @@
-import type { QuotaViewMode } from '@shared/types'
 import type { QuotaFilterCounts, QuotaFilterValue, TFn } from '../types'
 import { AnimatedSelect, type AnimatedSelectOption } from './AnimatedSelect'
 
@@ -7,10 +6,8 @@ export function Toolbar({
   filterCounts,
   hasAccounts,
   busy,
-  quotaViewMode,
   t,
   onChangeFilter,
-  onChangeViewMode,
   onOpenSettings,
   onAdd,
   onSync,
@@ -22,10 +19,8 @@ export function Toolbar({
   filterCounts: QuotaFilterCounts
   hasAccounts: boolean
   busy: boolean
-  quotaViewMode: QuotaViewMode
   t: TFn
   onChangeFilter: (value: QuotaFilterValue) => void
-  onChangeViewMode: (value: QuotaViewMode) => void
   onOpenSettings: () => void
   onAdd: () => void
   onSync: () => void
@@ -40,12 +35,6 @@ export function Toolbar({
     { value: 'blocked', label: t(`封禁（${filterCounts.blocked}）`) }
   ]
 
-  const viewOptions: AnimatedSelectOption<QuotaViewMode>[] = [
-    { value: 'both', label: t('百分比+倒数') },
-    { value: 'percent', label: t('百分比') },
-    { value: 'countdown', label: t('倒数') }
-  ]
-
   return (
     <header className="toolbar">
       <span className="toolbar-title">{t('Codex 切号器')}</span>
@@ -55,13 +44,6 @@ export function Toolbar({
         value={quotaFilter}
         options={filterOptions}
         onChange={onChangeFilter}
-      />
-      <AnimatedSelect
-        className="animated-select-view"
-        ariaLabel={t('显示模式')}
-        value={quotaViewMode}
-        options={viewOptions}
-        onChange={onChangeViewMode}
       />
       <button type="button" className="btn btn-toolbar" onClick={onAdd}>
         {t('添加账号')}

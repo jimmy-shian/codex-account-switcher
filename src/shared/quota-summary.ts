@@ -30,6 +30,8 @@ export interface QuotaDisplayWindow {
   provided: boolean
   remaining: number | null
   resetsAt: number | null
+  windowDurationMins?: number | null
+  label: string
 }
 
 export interface QuotaDisplayWindows {
@@ -56,6 +58,24 @@ function isFreePlanType(planType: string | null | undefined): boolean {
   return t.includes('free')
 }
 
+export function inferLongWindowLabel(
+  w: QuotaWindow | null | undefined,
+  planType: string | null | undefined,
+  locale: UiLocale
+): string {
+  const mins = w?.windowDurationMins
+  if (mins != null) {
+    if (mins >= 35000) return localize('30天', locale)
+    if (mins >= 8000 && mins <= 14000) return localize('7天', locale)
+    if (mins >= 1200 && mins <= 1800) return localize('24小时', locale)
+    if (mins >= 200 && mins <= 400) return localize('5小时', locale)
+  }
+  if (isFreePlanType(planType)) {
+    return localize('30天', locale)
+  }
+  return localize('7天', locale)
+}
+
 export function getQuotaWindowDisplayMode(q: QuotaSnapshot | null): QuotaWindowDisplayMode {
   if (!q) return 'unknown'
   const hasPrimary = hasWindowSignal(q.primary)
@@ -69,14 +89,16 @@ export function getQuotaWindowDisplayMode(q: QuotaSnapshot | null): QuotaWindowD
   return 'dual'
 }
 
-function displayWindowFrom(w: QuotaWindow | null): QuotaDisplayWindow {
+function displayWindowFrom(w: QuotaWindow | null, label: string): QuotaDisplayWindow {
   if (!hasWindowSignal(w)) {
-    return { provided: false, remaining: null, resetsAt: null }
+    return { provided: false, remaining: null, resetsAt: null, windowDurationMins: null, label }
   }
   return {
     provided: true,
     remaining: remainingPercentFromUsed(w?.usedPercent ?? null),
-    resetsAt: w?.resetsAt ?? null
+    resetsAt: w?.resetsAt ?? null,
+    windowDurationMins: w?.windowDurationMins ?? null,
+    label
   }
 }
 
@@ -109,20 +131,22 @@ function collectExtraRows(q: QuotaSnapshot | null, locale: UiLocale): QuotaDispl
 
 export function getQuotaDisplayWindows(q: QuotaSnapshot | null, locale: UiLocale = 'zh-CN'): QuotaDisplayWindows {
   const mode = getQuotaWindowDisplayMode(q)
+  const defaultLongLabel = isFreePlanType(q?.planType) ? localize('30天', locale) : localize('7天', locale)
   const unknown = {
     mode,
-    fiveHour: { provided: false, remaining: null, resetsAt: null },
-    sevenDay: { provided: false, remaining: null, resetsAt: null },
+    fiveHour: { provided: false, remaining: null, resetsAt: null, windowDurationMins: null, label: localize('5小时', locale) },
+    sevenDay: { provided: false, remaining: null, resetsAt: null, windowDurationMins: null, label: defaultLongLabel },
     extras: collectExtraRows(q, locale)
   }
   if (!q) return unknown
 
   if (mode === 'secondary-only') {
     const source = hasWindowSignal(q.primary) ? q.primary : q.secondary
+    const longLabel = inferLongWindowLabel(source, q.planType, locale)
     return {
       mode,
-      fiveHour: { provided: false, remaining: null, resetsAt: null },
-      sevenDay: displayWindowFrom(source),
+      fiveHour: { provided: false, remaining: null, resetsAt: null, windowDurationMins: null, label: localize('5小时', locale) },
+      sevenDay: displayWindowFrom(source, longLabel),
       extras: collectExtraRows(q, locale)
     }
   }
@@ -130,17 +154,18 @@ export function getQuotaDisplayWindows(q: QuotaSnapshot | null, locale: UiLocale
   if (mode === 'primary-only') {
     return {
       mode,
-      fiveHour: displayWindowFrom(q.primary),
-      sevenDay: { provided: false, remaining: null, resetsAt: null },
+      fiveHour: displayWindowFrom(q.primary, localize('5小时', locale)),
+      sevenDay: { provided: false, remaining: null, resetsAt: null, windowDurationMins: null, label: defaultLongLabel },
       extras: collectExtraRows(q, locale)
     }
   }
 
   if (mode === 'dual') {
+    const longLabel = inferLongWindowLabel(q.secondary, q.planType, locale)
     return {
       mode,
-      fiveHour: displayWindowFrom(q.primary),
-      sevenDay: displayWindowFrom(q.secondary),
+      fiveHour: displayWindowFrom(q.primary, localize('5小时', locale)),
+      sevenDay: displayWindowFrom(q.secondary, longLabel),
       extras: collectExtraRows(q, locale)
     }
   }
@@ -232,10 +257,16 @@ export function getNearestResetDetail(
     const ts = normalizeTs(raw)
     if (ts != null) candidates.push({ ts, label, rank })
   }
-  push(display.fiveHour.resetsAt, localize('5小时', locale), 0)
-  push(display.sevenDay.resetsAt, localize('7天', locale), 1)
-  for (const e of display.extras) push(e.resetsAt, e.label, 2)
-  push(q.resetCredits?.nearestExpiresAt ?? null, localize('重置券', locale), 3)
+  // 完整重設：優先使用 7 天 / 30 天長週期重設時間，不以 5 小時滾動窗主導倒數
+  if (display.sevenDay.provided && display.sevenDay.resetsAt != null) {
+    push(display.sevenDay.resetsAt, display.sevenDay.label, 0)
+  }
+  for (const e of display.extras) push(e.resetsAt, e.label, 1)
+  push(q.resetCredits?.nearestExpiresAt ?? null, localize('重置券', locale), 2)
+  // 若長週期無資料但有 5 小時，才以 5 小時作為最後備案
+  if (candidates.length === 0 && display.fiveHour.provided && display.fiveHour.resetsAt != null) {
+    push(display.fiveHour.resetsAt, display.fiveHour.label, 3)
+  }
   if (candidates.length === 0) return { ts: null, sourceLabel: null, hasData: false, isExpired: false }
   const future = candidates.filter((c) => c.ts > now).sort((a, b) => a.ts - b.ts || a.rank - b.rank)
   if (future.length > 0) {
@@ -317,7 +348,7 @@ export function quotaRemainRows(q: QuotaSnapshot | null, locale: UiLocale = 'zh-
   if (main.fiveHour.provided) {
     rows.push({
       key: `${q.limitId}:5h`,
-      label: localize('5小时', locale),
+      label: main.fiveHour.label,
       remaining: main.fiveHour.remaining,
       resetsAt: main.fiveHour.resetsAt
     })
@@ -325,7 +356,7 @@ export function quotaRemainRows(q: QuotaSnapshot | null, locale: UiLocale = 'zh-
   if (main.sevenDay.provided) {
     rows.push({
       key: `${q.limitId}:7d`,
-      label: localize('7天', locale),
+      label: main.sevenDay.label,
       remaining: main.sevenDay.remaining,
       resetsAt: main.sevenDay.resetsAt
     })

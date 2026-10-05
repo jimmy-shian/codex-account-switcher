@@ -8,7 +8,7 @@ import {
   resetCreditsText
 } from '@shared/quota-summary'
 import type { SavedAccount } from '@shared/types'
-import type { AccountRowView, QuotaRefreshUi, QuotaViewMode, SortConfig, SortField, TFn } from '../types'
+import type { AccountRowView, QuotaRefreshUi, SortConfig, SortField, TFn } from '../types'
 import { planBadgeClass, planBadgeText, statusPill } from '../lib/account-view'
 import { QuotaProgressBlock } from './QuotaProgressBlock'
 
@@ -39,7 +39,6 @@ export function AccountTable({
   rows,
   locale,
   sortConfig,
-  quotaViewMode,
   nowSec,
   t,
   onSort,
@@ -52,7 +51,6 @@ export function AccountTable({
   rows: AccountRowView[]
   locale: UiLocale
   sortConfig: SortConfig | null
-  quotaViewMode: QuotaViewMode
   nowSec: number
   t: TFn
   onSort: (field: SortField) => void
@@ -76,7 +74,7 @@ export function AccountTable({
             onSort={onSort}
           />
           <SortableHeader
-            label={t('7d 额度')}
+            label={t('7d / 30d 额度')}
             field="7d"
             sortConfig={sortConfig}
             title={t('点击按额度比例排序')}
@@ -119,22 +117,19 @@ export function AccountTable({
                 {resetCredits ? <div className="account-sub reset-credits-badge">{resetCredits}</div> : null}
               </td>
               <td>
-                <QuotaProgressBlock label={t('5小时')} q={display.fiveHour} tone="green" viewMode={quotaViewMode} t={t} />
+                <QuotaProgressBlock label={display.fiveHour.label} q={display.fiveHour} tone="green" t={t} />
               </td>
               <td>
-                <QuotaProgressBlock label={t('7天')} q={display.sevenDay} tone="blue" viewMode={quotaViewMode} t={t} />
-                {quotaViewMode !== 'countdown'
-                  ? display.extras.map((e) => (
-                      <QuotaProgressBlock
-                        key={e.key}
-                        label={e.label}
-                        q={{ provided: e.remaining != null, remaining: e.remaining, resetsAt: e.resetsAt }}
-                        tone="blue"
-                        viewMode={quotaViewMode}
-                        t={t}
-                      />
-                    ))
-                  : null}
+                <QuotaProgressBlock label={display.sevenDay.label} q={display.sevenDay} tone="blue" t={t} />
+                {display.extras.map((e) => (
+                  <QuotaProgressBlock
+                    key={e.key}
+                    label={e.label}
+                    q={{ provided: e.remaining != null, remaining: e.remaining, resetsAt: e.resetsAt }}
+                    tone="blue"
+                    t={t}
+                  />
+                ))}
               </td>
               <td className="expiry-cell" title={row.nearestResetLabel ?? ''}>
                 <div className="expiry-countdown">{countdown}</div>
@@ -154,14 +149,18 @@ export function AccountTable({
                   {row.isActive ? (
                     <button
                       type="button"
-                      className="btn btn-sm btn-primary"
+                      className="btn btn-sm btn-primary btn-action-primary"
                       disabled
                       title={t('当前使用中')}
                     >
                       {t('使用中')}
                     </button>
                   ) : (
-                    <button type="button" className="btn btn-sm btn-primary" onClick={() => onSwitch(a.id)}>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary btn-action-primary"
+                      onClick={() => onSwitch(a.id)}
+                    >
                       {t('切换')}
                     </button>
                   )}

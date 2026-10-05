@@ -104,14 +104,13 @@ export default function App() {
     })()
   }, [])
 
-  // 倒數 tick：只有在需要顯示倒數時才啟動，每 60s 更新（最小粒度為分）
+  // 倒數 tick：每 60s 更新相對時間
   useEffect(() => {
-    if (quotaViewMode === 'percent' && sortConfig?.field !== 'reset') return
     const timer = window.setInterval(() => {
       setNowSec(Math.floor(Date.now() / 1000))
     }, 60_000)
     return () => window.clearInterval(timer)
-  }, [quotaViewMode, sortConfig?.field])
+  }, [])
 
   const applyListState = useCallback((r: ListResult) => {
     setAccounts(r.accounts)
@@ -413,10 +412,8 @@ export default function App() {
         filterCounts={filterCounts}
         hasAccounts={accounts.length > 0}
         busy={quota.ui.mode !== 'idle'}
-        quotaViewMode={quotaViewMode}
         t={t}
         onChangeFilter={setQuotaFilter}
-        onChangeViewMode={(next) => void onChangeViewMode(next)}
         onOpenSettings={() => setSettingsOpen(true)}
         onAdd={() => void onAdd()}
         onSync={() => void onSync()}
@@ -462,7 +459,6 @@ export default function App() {
             rows={rows}
             locale={locale}
             sortConfig={sortConfig}
-            quotaViewMode={quotaViewMode}
             nowSec={nowSec}
             t={t}
             onSort={onSort}

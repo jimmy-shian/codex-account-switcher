@@ -156,7 +156,7 @@ export function PathSettings({
 }) {
   const terminalOptions: AnimatedSelectOption<CodexTerminal>[] = TERMINAL_OPTIONS.map((item) => ({
     value: item,
-    label: TERMINAL_LABELS[item]
+    label: t(TERMINAL_LABELS[item])
   }))
 
   const isRunning = running.length > 0

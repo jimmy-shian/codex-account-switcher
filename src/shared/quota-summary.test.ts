@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { getQuotaDisplayWindows, getQuotaWindowDisplayMode, remainingPercentFromUsed } from './quota-summary'
+import {
+  getNearestResetDetail,
+  getQuotaDisplayWindows,
+  getQuotaWindowDisplayMode,
+  remainingPercentFromUsed
+} from './quota-summary'
 import type { QuotaSnapshot } from './types'
 
 function baseSnapshot(partial: Partial<QuotaSnapshot>): QuotaSnapshot {
@@ -58,5 +63,30 @@ describe('quota-summary window mode', () => {
     expect(remainingPercentFromUsed(0.73)).toBe(27)
     expect(remainingPercentFromUsed(73)).toBe(27)
     expect(remainingPercentFromUsed(1)).toBe(99)
+  })
+
+  it('free 帳號長窗口標籤為 30天，非 7天', () => {
+    const q = baseSnapshot({
+      planType: 'free',
+      primary: { usedPercent: 45, resetsAt: 3000, windowDurationMins: 43200 },
+      secondary: null
+    })
+    const out = getQuotaDisplayWindows(q)
+    expect(out.sevenDay.provided).toBe(true)
+    expect(out.sevenDay.label).toBe('30天')
+  })
+
+  it('plus 帳號長窗口標籤為 7天，且到期倒數優先取 7天完整重設時間', () => {
+    const q = baseSnapshot({
+      planType: 'plus',
+      primary: { usedPercent: 10, resetsAt: 500, windowDurationMins: 300 },
+      secondary: { usedPercent: 50, resetsAt: 2500, windowDurationMins: 10080 }
+    })
+    const out = getQuotaDisplayWindows(q)
+    expect(out.sevenDay.label).toBe('7天')
+    const detail = getNearestResetDetail(q, 'zh-TW', 100)
+    // 應優先取 7 天完整重設（2500），而非 5 小時（500）
+    expect(detail.ts).toBe(2500)
+    expect(detail.sourceLabel).toBe('7天')
   })
 })

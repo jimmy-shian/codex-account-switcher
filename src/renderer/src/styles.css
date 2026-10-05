@@ -411,7 +411,7 @@ td:nth-child(5) {
 
 th:nth-child(6),
 td:nth-child(6) {
-  width: 180px;
+  width: 204px;
   white-space: nowrap;
 }
 
@@ -451,6 +451,12 @@ td:nth-child(6) {
   gap: 4px;
   flex-wrap: nowrap;
   align-items: center;
+}
+
+.btn-action-primary {
+  min-width: 52px;
+  justify-content: center;
+  text-align: center;
 }
 
 .btn-sm {
@@ -792,7 +798,8 @@ td:nth-child(6) {
   word-break: break-all;
 }
 
-.modal input {
+.modal input[type='text'],
+.modal input:not([type='radio']):not([type='checkbox']) {
   width: 100%;
   padding: 8px 10px;
   margin-bottom: 12px;
@@ -842,6 +849,7 @@ td:nth-child(6) {
 }
 
 .path-settings {
+  position: relative;
   border-bottom: 1px solid var(--border);
   background: var(--path-bar-bg);
   transition: background-color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
@@ -849,6 +857,7 @@ td:nth-child(6) {
 
 .path-settings.is-open {
   box-shadow: var(--shadow);
+  z-index: 30;
 }
 
 .path-settings-bar {
@@ -925,10 +934,14 @@ td:nth-child(6) {
   grid-template-rows: 1fr;
   opacity: 1;
   visibility: visible;
+  overflow: visible;
 }
 .path-settings-body-inner {
   overflow: hidden;
   min-height: 0;
+}
+.path-settings-collapsible.is-open .path-settings-body-inner {
+  overflow: visible;
 }
 
 .path-settings-body {
