@@ -18,8 +18,13 @@ extraResources:
     to: resources
     filter:
       - '**/*'
+  - from: build/icon.ico
+    to: icon.ico
+  - from: build/icon.png
+    to: icon.png
 
 win:
+  icon: build/icon.ico
   signAndEditExecutable: false
   target:
     - target: portable

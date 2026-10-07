@@ -7,6 +7,9 @@ dist
 *.log
 .DS_Store
 
+# Electron Builder output
+release*/
+
 # Local credentials and debug output
 auth.json
 auth.json.bak.*
