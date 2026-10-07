@@ -1219,6 +1219,7 @@ export class AccountService {
       title: 'Codex 登入',
       show: false,
       backgroundColor: '#ffffff',
+      icon: path.join(process.resourcesPath, process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
       autoHideMenuBar: true,
       webPreferences: {
         contextIsolation: true,

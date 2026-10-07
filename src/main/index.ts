@@ -34,6 +34,9 @@ import { invalidateCodexExeCache } from './paths'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 app.setName('codex-account-switcher')
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.local.codex-account-switcher')
+}
 
 const service = new AccountService()
 
@@ -106,6 +109,17 @@ function resolvePreload(): string {
   return path.join(base, 'index.js')
 }
 
+function resolveAppIcon(): string {
+  const iconName = process.platform === 'win32' ? 'icon.ico' : 'icon.png'
+  const candidates = [
+    path.join(process.resourcesPath, 'build', iconName),
+    path.join(process.resourcesPath, iconName),
+    path.join(__dirname, '../../build', iconName),
+    path.join(__dirname, '../../../build', iconName)
+  ]
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[candidates.length - 1]
+}
+
 function applyThemeSource(): void {
   try {
     const mode = getTheme()
@@ -134,6 +148,7 @@ function createWindow(): void {
     minWidth: 980,
     minHeight: 560,
     backgroundColor: resolveWindowBackground(),
+    icon: resolveAppIcon(),
     // 先隱藏等首幀 ready-to-show 再顯示，避免啟動 / 還原時的白屏閃爍
     show: false,
     autoHideMenuBar: true,
