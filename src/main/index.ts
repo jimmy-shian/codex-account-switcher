@@ -145,7 +145,7 @@ function createWindow(): void {
   const win = new BrowserWindow({
     width: 1080,
     height: 720,
-    minWidth: 980,
+    minWidth: 360,
     minHeight: 560,
     backgroundColor: resolveWindowBackground(),
     icon: resolveAppIcon(),

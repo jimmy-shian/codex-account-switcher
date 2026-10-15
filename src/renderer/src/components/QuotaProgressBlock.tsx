@@ -36,7 +36,7 @@ export const QuotaProgressBlock = memo(function QuotaProgressBlock({
         <div className="quota-block-head">
           <span>{label}</span>
           {countdownText ? (
-            <span className="quota-countdown" title={resetText}>
+            <span className="quota-remain" title={resetText}>
               {countdownText}
             </span>
           ) : (
@@ -57,7 +57,7 @@ export const QuotaProgressBlock = memo(function QuotaProgressBlock({
         <span className="quota-value">
           <strong>{percentText}</strong>
           {mode === 'both' && countdownText ? (
-            <span className="quota-countdown" title={resetText}>
+            <span className="quota-remain" title={resetText}>
               {countdownText}
             </span>
           ) : null}

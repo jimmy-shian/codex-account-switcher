@@ -236,6 +236,25 @@ body {
   white-space: nowrap;
 }
 
+/* 工具列按鈕：桌機顯示文字、SVG 隱藏；窄窗反之（只顯示 SVG 圖示） */
+.toolbar-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.toolbar-actions .btn svg {
+  display: none;
+  flex: 0 0 auto;
+}
+
+.toolbar-actions .btn .btn-label {
+  display: inline;
+  white-space: nowrap;
+}
+
 .proxy-setting {
   display: flex;
   align-items: center;
@@ -295,9 +314,10 @@ body {
   padding: 10px;
 }
 
-table {
+table,
+.account-table {
   width: 100%;
-  min-width: 1120px;
+  min-width: 1040px;
   table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
@@ -321,6 +341,7 @@ th {
   background: var(--th-bg);
   font-weight: 600;
   color: var(--muted);
+  white-space: nowrap;
 }
 
 tr:last-child td {
@@ -401,31 +422,31 @@ tr.row-expiry-3 .quota-reset-text {
 
 th:nth-child(1),
 td:nth-child(1) {
-  width: 32%;
+  width: 30%;
 }
 
 th:nth-child(2),
 td:nth-child(2),
 th:nth-child(3),
 td:nth-child(3) {
-  width: 16%;
+  width: 17%;
 }
 
 th:nth-child(4),
 td:nth-child(4) {
-  width: 120px;
+  width: 118px;
   white-space: nowrap;
 }
 
 th:nth-child(5),
 td:nth-child(5) {
-  width: 90px;
+  width: 44px;
   white-space: nowrap;
 }
 
 th:nth-child(6),
 td:nth-child(6) {
-  width: 204px;
+  width: 216px;
   white-space: nowrap;
 }
 
@@ -460,11 +481,77 @@ td:nth-child(6) {
   color: #9dbcff;
 }
 
+.quota-remain {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
 .row-actions {
   display: flex;
   gap: 4px;
   flex-wrap: nowrap;
   align-items: center;
+}
+
+.row-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.row-actions .btn svg {
+  display: none;
+  flex: 0 0 auto;
+}
+
+.row-actions .btn .btn-label {
+  display: inline;
+  white-space: nowrap;
+}
+
+/* 狀態小圓點：桌機狀態欄直接顯示圓點（hover 顯示文字），窄螢幕帳號旁取代 pill 文字 */
+.status-dot {
+  display: none;
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+/* 桌機狀態欄顯示 pill 文字；小圓點僅在窄窗帳號旁出現（見 900px 媒體查詢） */
+
+.cell-status {
+  text-align: center;
+}
+
+.dot-ok {
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18);
+}
+
+.dot-warn {
+  background: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18);
+}
+
+.dot-bad {
+  background: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18);
+}
+
+.dot-neutral {
+  background: #9ca3af;
+  box-shadow: 0 0 0 3px rgba(156, 163, 175, 0.18);
+}
+
+/* 窄螢幕合併列：桌機隱藏，卡片模式顯示「7d/30d + 到期倒數」一行 */
+.quota-merged-expiry {
+  display: none;
 }
 
 .btn-action-primary {
@@ -567,17 +654,54 @@ td:nth-child(6) {
 }
 
 .toast {
-  position: fixed;
-  bottom: 20px;
-  right: 20px;
-  max-width: 360px;
   padding: 12px 16px;
   background: var(--toast-bg);
   color: var(--toast-text);
   border-radius: 8px;
   font-size: 13px;
-  z-index: 100;
   box-shadow: var(--shadow);
+  max-width: 360px;
+}
+
+/* 右下角堆叠式通知：最多 3 则，新通知从下方滑入把旧通知往上推挤 */
+.toast-stack {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 100;
+  width: min(360px, calc(100vw - 40px));
+  pointer-events: none;
+}
+
+.toast-stack .toast {
+  position: static;
+  max-width: none;
+  margin: 0;
+  pointer-events: auto;
+}
+
+.toast-item {
+  animation: toast-push-up 0.28s cubic-bezier(0.21, 1.02, 0.73, 1);
+}
+
+@keyframes toast-push-up {
+  from {
+    transform: translateY(16px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast-item {
+    animation: none;
+  }
 }
 
 .nickname {
@@ -676,6 +800,7 @@ td:nth-child(6) {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  overflow: hidden;
 }
 
 .quota-block-loading {
@@ -689,16 +814,25 @@ td:nth-child(6) {
   font-size: 11px;
   color: var(--text);
   gap: 6px;
+  white-space: nowrap;
+}
+
+.quota-block-head > span:first-child {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .quota-block-head strong {
   font-size: 11px;
+  white-space: nowrap;
 }
 
 .quota-value {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 .quota-track {
@@ -1018,6 +1152,17 @@ td:nth-child(6) {
   word-break: break-all;
 }
 
+@media (max-width: 1100px) {
+  table,
+  .account-table {
+    min-width: 960px;
+  }
+
+  .row-actions {
+    flex-wrap: wrap;
+  }
+}
+
 @media (max-width: 980px) {
   .toolbar {
     gap: 8px;
@@ -1049,6 +1194,270 @@ td:nth-child(6) {
 
   .quota-block {
     min-width: 0;
+  }
+}
+
+/* 窄螢幕卡片式響應佈局：表格轉卡片、額度與倒數合併、狀態變圓點、操作變 SVG 圖示鈕 */
+@media (max-width: 900px) {
+  .table-wrap {
+    overflow-x: hidden;
+    padding: 8px;
+  }
+
+  table.account-table {
+    min-width: 0;
+    display: block;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    overflow: visible;
+    table-layout: auto;
+  }
+
+  .account-table thead {
+    display: none;
+  }
+
+  .account-table tbody {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .account-table tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      'account account'
+      'five seven'
+      'ops ops';
+    gap: 10px 12px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    content-visibility: visible;
+    contain-intrinsic-size: none;
+  }
+
+  .account-table tbody tr.row-active {
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+
+  .account-table td,
+  .account-table th {
+    width: auto !important;
+    min-width: 0;
+    max-width: 100%;
+    padding: 0;
+    border-bottom: none;
+    white-space: normal;
+  }
+
+  .account-table .cell-account {
+    grid-area: account;
+    min-width: 0;
+  }
+
+  .account-table .cell-5h {
+    grid-area: five;
+    min-width: 0;
+  }
+
+  .account-table .cell-7d {
+    grid-area: seven;
+    min-width: 0;
+  }
+
+  /* 合併欄位：獨立到期欄與狀態文字欄隱藏，改由合併列 + 圓點呈現 */
+  .account-table .cell-expiry,
+  .account-table .cell-status {
+    display: none;
+  }
+
+  .account-table .cell-ops {
+    grid-area: ops;
+    min-width: 0;
+  }
+
+  .account-table .status-dot {
+    display: inline-block;
+  }
+
+  .account-table .quota-merged-expiry {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    font-size: 11px;
+    line-height: 1.4;
+    min-width: 0;
+  }
+
+  .account-table .quota-merged-percent {
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .account-table .quota-merged-sep {
+    color: var(--muted);
+  }
+
+  .account-table .quota-merged-countdown {
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .account-table .quota-merged-source {
+    color: var(--muted);
+    font-weight: 400;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  /* 窄窗省略冗長重置時間，保留進度條＋合併 pill 倒數即可 */
+  .account-table .cell-5h .quota-reset-text,
+  .account-table .cell-7d .quota-block .quota-reset-text {
+    display: none;
+  }
+
+  .account-table .row-actions {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .account-table .row-actions .btn {
+    min-width: 0;
+    width: 100%;
+    padding: 7px 4px;
+  }
+
+  /* 壓縮視窗：文字改 SVG 顯示，不與文字同時出現 */
+  .account-table .row-actions .btn .btn-label {
+    display: none;
+  }
+
+  .account-table .row-actions .btn svg {
+    display: block;
+    width: 15px;
+    height: 15px;
+  }
+
+  .account-table .expiry-source {
+    white-space: normal;
+  }
+}
+
+/* 窄窗工具列：文字改 SVG 圖示顯示，標題讓位給篩選器 */
+@media (max-width: 700px) {
+  .toolbar {
+    flex-wrap: nowrap;
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .toolbar-left {
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 6px;
+    width: auto;
+  }
+
+  .toolbar-title {
+    display: none;
+  }
+
+  .animated-select-filter {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: auto;
+    order: 0;
+  }
+
+  .toolbar-actions {
+    flex: 0 0 auto;
+    width: auto;
+    margin-left: auto;
+    gap: 6px;
+    flex-wrap: nowrap;
+  }
+
+  .toolbar-actions .btn {
+    flex: 0 0 auto;
+    min-width: 32px;
+    padding: 7px 8px;
+  }
+
+  .toolbar-actions .btn .btn-label {
+    display: none;
+  }
+
+  .toolbar-actions .btn svg {
+    display: block;
+    width: 15px;
+    height: 15px;
+  }
+}
+
+@media (max-width: 560px) {
+  .table-wrap {
+    padding: 8px 8px 12px;
+  }
+
+  .account-table tbody tr {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'account'
+      'five'
+      'seven'
+      'ops';
+  }
+
+  .account-email {
+    font-size: 13px;
+  }
+
+  /* 極窄：操作列變成四顆等寬 SVG 圖示鈕，省略文字 */
+  .account-table .row-actions {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .account-table .row-actions .btn {
+    min-width: 0;
+    width: 100%;
+    padding: 7px 4px;
+  }
+
+  .account-table .row-actions .btn .btn-label {
+    display: none;
+  }
+
+  .account-table .row-actions .btn svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  .toolbar-actions .btn {
+    flex: 0 0 auto;
+  }
+
+  .toast-stack {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    width: auto;
   }
 }
 

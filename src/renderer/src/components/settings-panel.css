@@ -95,3 +95,16 @@
 .animated-select-settings-locale {
   width: 200px;
 }
+
+.settings-backup-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-backup-row .settings-backup-btn {
+  padding: 10px 16px;
+  min-height: 40px;
+  font-size: 13px;
+  line-height: 1.4;
+}

@@ -1,3 +1,4 @@
+import type { ToastItem } from '../hooks/useAppState'
 import type { DeleteTarget, TFn, WarmupConfirmTarget } from '../types'
 
 export function WarmupConfirmModal({
@@ -76,6 +77,19 @@ export function Toast({ message }: { message: string }) {
   return (
     <div className="toast" role="status">
       {message}
+    </div>
+  )
+}
+
+/** 右下角堆叠式通知：最多 3 则，新通知从下方滑入把旧通知往上推挤 */
+export function ToastStack({ toasts }: { toasts: ToastItem[] }) {
+  return (
+    <div className="toast-stack" role="status" aria-live="polite">
+      {toasts.map((item) => (
+        <div key={item.id} className="toast toast-item">
+          {item.message}
+        </div>
+      ))}
     </div>
   )
 }

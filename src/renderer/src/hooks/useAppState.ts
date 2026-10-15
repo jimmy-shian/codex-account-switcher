@@ -5,35 +5,53 @@ import { cleanErrorMessage } from '../lib/account-view'
 import type { QuotaRefreshUi, TFn } from '../types'
 
 const TOAST_MS = 4500
+const TOAST_MAX = 3
+
+export interface ToastItem {
+  id: number
+  message: string
+}
 
 /** 語言與翻譯函式，locale 變動時自動重算 */
 export function useTranslate(locale: UiLocale): TFn {
   return useCallback((text: string) => localize(text, locale), [locale])
 }
 
-/** 底部提示訊息，自動淡出 */
+/** 右下角堆叠通知：最多保留 3 则，新通知把旧通知往上推挤 */
 export function useToast(): {
+  toasts: ToastItem[]
   toast: string | null
   showToast: (msg: string) => void
   showError: (e: unknown) => void
 } {
-  const [toast, setToast] = useState<string | null>(null)
-  const timerRef = useRef<number | null>(null)
+  const [toasts, setToasts] = useState<ToastItem[]>([])
+  const timersRef = useRef(new Map<number, number>())
+  const seqRef = useRef(0)
 
   useEffect(
     () => () => {
-      if (timerRef.current != null) window.clearTimeout(timerRef.current)
+      timersRef.current.forEach((timer) => window.clearTimeout(timer))
+      timersRef.current.clear()
     },
     []
   )
 
   const showToast = useCallback((msg: string) => {
-    if (timerRef.current != null) window.clearTimeout(timerRef.current)
-    setToast(msg)
-    timerRef.current = window.setTimeout(() => {
-      timerRef.current = null
-      setToast(null)
+    const id = ++seqRef.current
+    setToasts((prev) => {
+      const evicted = prev.length >= TOAST_MAX ? prev.slice(0, prev.length - TOAST_MAX + 1) : []
+      evicted.forEach((item) => {
+        const timer = timersRef.current.get(item.id)
+        if (timer != null) window.clearTimeout(timer)
+        timersRef.current.delete(item.id)
+      })
+      return [...prev.slice(-(TOAST_MAX - 1)), { id, message: msg }]
+    })
+    const timer = window.setTimeout(() => {
+      timersRef.current.delete(id)
+      setToasts((prev) => prev.filter((item) => item.id !== id))
     }, TOAST_MS)
+    timersRef.current.set(id, timer)
   }, [])
 
   const showError = useCallback(
@@ -43,7 +61,7 @@ export function useToast(): {
     [showToast]
   )
 
-  return { toast, showToast, showError }
+  return { toasts, toast: toasts.length > 0 ? toasts[toasts.length - 1].message : null, showToast, showError }
 }
 
 /**

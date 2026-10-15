@@ -5,7 +5,7 @@ import { getNearestResetTs, getQuotaDisplayWindows } from '@shared/quota-summary
 import { isUiLocale, type UiLocale } from '@shared/i18n'
 import { AccountTable, buildAccountRows } from './components/AccountTable'
 import { LiveBanner, LoginWaitHint } from './components/LiveBanner'
-import { DeleteConfirmModal, RefreshIndicator, Toast, WarmupConfirmModal } from './components/Modals'
+import { DeleteConfirmModal, RefreshIndicator, ToastStack, WarmupConfirmModal } from './components/Modals'
 import { PathSettings } from './components/PathSettings'
 import { SettingsPanel } from './components/SettingsPanel'
 import './components/settings-panel.css'
@@ -41,7 +41,7 @@ export default function App() {
   const initialLoadDoneRef = useRef(false)
 
   const t = useTranslate(locale)
-  const { toast, showToast, showError } = useToast()
+  const { toasts, showToast, showError } = useToast()
   const quota = useQuotaOperation(loginInProgress)
   const paths = usePaths()
   const theme = useTheme()
@@ -403,8 +403,33 @@ export default function App() {
 
   const onCopyEmail = useCallback(
     (email: string) => {
-      void navigator.clipboard.writeText(email)
-      showToast(t('已复制账号：') + email)
+      const done = () => showToast(t('已复制账号：') + email)
+      const fallback = () => {
+        try {
+          const ta = document.createElement('textarea')
+          ta.value = email
+          ta.style.position = 'fixed'
+          ta.style.opacity = '0'
+          document.body.appendChild(ta)
+          ta.select()
+          document.execCommand('copy')
+          document.body.removeChild(ta)
+          done()
+        } catch {
+          // 剪貼簿不可用時至少把帳號顯示出來，方便手動複製
+          showToast(email)
+        }
+      }
+      try {
+        const p = navigator.clipboard?.writeText(email)
+        if (p && typeof (p as Promise<void>).then === 'function') {
+          void (p as Promise<void>).then(done, fallback)
+        } else {
+          fallback()
+        }
+      } catch {
+        fallback()
+      }
     },
     [showToast, t]
   )
@@ -440,15 +465,12 @@ export default function App() {
       <Toolbar
         quotaFilter={quotaFilter}
         filterCounts={filterCounts}
-        hasAccounts={accounts.length > 0}
         busy={quota.ui.mode !== 'idle'}
         t={t}
         onChangeFilter={setQuotaFilter}
         onOpenSettings={() => setSettingsOpen(true)}
         onAdd={() => void onAdd()}
         onImportLive={() => void onImportLive()}
-        onImportAuthJson={() => void onImportAuthJson()}
-        onExportAuthJson={() => void onExportAuthJson()}
         onWarmup={() => setWarmupConfirm({ mode: 'batch' })}
       />
       <PathSettings
@@ -503,7 +525,7 @@ export default function App() {
           }
         />
       )}
-      {toast ? <Toast message={toast} /> : null}
+      {toasts.length > 0 ? <ToastStack toasts={toasts} /> : null}
 
       {warmupConfirm ? (
         <WarmupConfirmModal
@@ -533,12 +555,15 @@ export default function App() {
         locale={locale}
         proxyUrl={proxyUrl}
         proxySaving={proxySaving}
+        hasAccounts={accounts.length > 0}
         t={t}
         onClose={() => setSettingsOpen(false)}
         onChangeTheme={theme.setTheme}
         onChangeLocale={(next) => void onChangeLocale(next)}
         onChangeProxy={setProxyUrl}
         onSaveProxy={() => void onSaveProxy()}
+        onImportAuthJson={() => void onImportAuthJson()}
+        onExportAuthJson={() => void onExportAuthJson()}
       />
     </div>
   )

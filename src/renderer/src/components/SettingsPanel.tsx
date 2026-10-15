@@ -13,12 +13,15 @@ export function SettingsPanel({
   locale,
   proxyUrl,
   proxySaving,
+  hasAccounts,
   t,
   onClose,
   onChangeTheme,
   onChangeLocale,
   onChangeProxy,
-  onSaveProxy
+  onSaveProxy,
+  onImportAuthJson,
+  onExportAuthJson
 }: {
   open: boolean
   themeMode: ThemeMode
@@ -27,12 +30,15 @@ export function SettingsPanel({
   locale: UiLocale
   proxyUrl: string
   proxySaving: boolean
+  hasAccounts: boolean
   t: TFn
   onClose: () => void
   onChangeTheme: (mode: ThemeMode) => void
   onChangeLocale: (value: UiLocale) => void
   onChangeProxy: (value: string) => void
   onSaveProxy: () => void
+  onImportAuthJson: () => void
+  onExportAuthJson: () => void
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null)
 
@@ -121,6 +127,23 @@ export function SettingsPanel({
             </button>
           </div>
           <div className="settings-hint">{t('留空表示直连，不使用 Proxy')}</div>
+        </div>
+
+        <div className="settings-section">
+          <div className="settings-section-title">{t('备份与还原')}</div>
+          <div className="settings-backup-row">
+            <button type="button" className="btn btn-toolbar settings-backup-btn" onClick={onImportAuthJson}>
+              {t('从 JSON 导入')}
+            </button>
+            <button
+              type="button"
+              className="btn btn-toolbar settings-backup-btn"
+              disabled={!hasAccounts}
+              onClick={onExportAuthJson}
+            >
+              {t('导出 JSON')}
+            </button>
+          </div>
         </div>
 
         <div className="modal-actions">
