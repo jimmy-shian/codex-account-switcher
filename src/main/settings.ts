@@ -17,7 +17,7 @@ interface SettingsFile {
   proxyUrl?: string
   /** 自訂 codex 執行檔路徑；空字串代表自動偵測 */
   codexExePath?: string
-  /** 啟動 codex 的工作目錄；空字串代表使用者 home */
+  /** 啟動 codex 的工作目錄；空字串代表當前目錄 */
   codexWorkDir?: string
   /** 啟動 codex 使用的終端機 */
   codexTerminal?: CodexTerminal
@@ -129,9 +129,17 @@ export function setCodexExePath(value: string): string {
   return normalized
 }
 
+/** 預設工作目錄：當前目錄（開發時＝專案根目錄，打包後＝ exe 所在目錄） */
 export function getCodexWorkDir(): string {
   const override = getCodexWorkDirOverride()
-  return override || os.homedir()
+  if (override) return override
+  try {
+    const cwd = process.cwd()
+    if (cwd && fs.existsSync(cwd)) return cwd
+  } catch {
+    /* 取不到當前目錄時退回使用者 home */
+  }
+  return os.homedir()
 }
 
 /** 未正規化的覆寫值；空字串＝自動。供 UI 區分自動/自定義顯示。 */

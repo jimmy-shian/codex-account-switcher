@@ -1,6 +1,6 @@
 {
   "name": "codex-account-switcher",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Codex切号器 / Codex账号切换工具（Windows）",
   "author": "local",
   "keywords": [
@@ -19,7 +19,7 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config.directories.output=release-fixed",
+    "build": "electron-vite build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
     "preview": "electron-vite preview",
     "test": "node ./node_modules/vitest/vitest.mjs run"
   },

@@ -39,7 +39,7 @@ Codex 进程控制：
 - 用 `tasklist` + `WMIC` 列出运行中的 `codex.exe`，并显示「Codex 运行中（N）」状态，每 4 秒轮询一次。
 - 关闭进程时先请求温和退出，等待宽限时间后才强制结束，尽量避免未保存内容直接消失。
 - 启动终端可选：自动（优先 Windows Terminal）/ Windows Terminal / cmd 窗口 / 直接执行（无窗口）。
-- 可指定启动目录，留空则使用用户目录。
+- 可指定启动目录，留空则使用当前目录（开发时是项目根目录，打包后是 exe 所在目录）。
 
 界面与设置：
 
@@ -72,7 +72,7 @@ Codex 进程控制：
 路径设置面板：
 
 - `Codex 执行文件`：留空自动检测，找不到时可直接浏览选择。
-- `启动目录`：留空＝用户目录。
+- `启动目录`：留空＝当前目录。
 - `启动终端`：自动 / Windows Terminal / cmd 窗口 / 直接执行（无窗口）。
 - 输入框支持 `Enter` 确认、`Esc` 还原。
 
@@ -129,9 +129,9 @@ resources/             可选放置随包分发的 Codex 可执行文件
 
 ## Codex CLI
 
-应用需要能运行 `codex app-server`。解析顺序：
+应用需要能运行 `codex app-server`。解析顺序（当前目录优先，全部相对路径，开箱即用）：
 
-1. 打包资源目录中的 `resources/codex.exe`、`codex.cmd` 或 `codex`。
+1. 当前目录旁的 `resources/` 中的 `codex.exe`、`codex.cmd` 或 `codex`（打包后随应用分发；开发时就是项目根目录的 `resources/`）。
 2. OpenAI Codex 官方安装目录 `%LOCALAPPDATA%\OpenAI\Codex\bin`。
 3. Windows `where codex`。
 4. 当前 `PATH`。
@@ -194,7 +194,7 @@ npm test
 npm run build
 ```
 
-构建流程先运行 `electron-vite build`，再用 `electron-builder` 输出 Windows portable 和 NSIS 安装包。产物目录是 `release-fixed/`。
+构建流程先运行 `electron-vite build`，再用 `electron-builder` 输出 Windows portable 和 NSIS 安装包。产物目录是 `release-fixed/`（只在 `electron-builder.yml` 定义，`package.json` 不再重复指定，相对路径，换台机器 clone 下来双击 `build-exe.bat` 一键就能编）。
 
 `package.json` 中使用 `cross-env CSC_IDENTITY_AUTO_DISCOVERY=false`，用于避免未配置代码签名环境时被自动签名流程阻断。
 

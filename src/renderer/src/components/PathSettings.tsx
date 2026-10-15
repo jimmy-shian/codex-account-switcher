@@ -268,7 +268,7 @@ function WorkDirInput({
         className={`path-row-input${isAuto ? ' is-auto' : ''}`}
         type="text"
         value={draft}
-        placeholder={t('留空＝用户目录')}
+        placeholder={t('留空＝当前目录')}
         aria-label={t('启动目录')}
         title={display}
         onChange={(e) => setDraft(e.target.value)}
@@ -292,7 +292,7 @@ function WorkDirInput({
         <button
           type="button"
           className="btn btn-sm btn-ghost path-auto-reset"
-          title={t('清除自定义，恢复自动（用户目录）')}
+          title={t('清除自定义，恢复自动（当前目录）')}
           onClick={() => {
             setDraft('')
             onCommit('')

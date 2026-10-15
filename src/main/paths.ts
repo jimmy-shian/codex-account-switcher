@@ -98,11 +98,21 @@ export function getCodexDir(): string {
   return path.join(os.homedir(), '.codex')
 }
 
+/** 隨包分發的 codex：永遠先看當前資料夾旁的 resources（相對路徑），找不到才走系統偵測 */
 export function resolveBundledCodexExe(): string | null {
   if (app.isPackaged) {
-    const dir = path.join(process.resourcesPath, 'resources')
-    return firstExistingInDir(dir)
+    const dirs = [
+      path.join(process.resourcesPath, 'resources'),
+      // portable exe：resources 可能直接放在 exe 旁邊
+      path.join(path.dirname(process.execPath), 'resources')
+    ]
+    for (const dir of dirs) {
+      const hit = firstExistingInDir(dir)
+      if (hit) return hit
+    }
+    return null
   }
+  // 開發模式：專案當前資料夾的 resources/ 優先
   const dirs = [
     path.join(process.cwd(), 'resources'),
     path.join(app.getAppPath(), 'resources')
