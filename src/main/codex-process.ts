@@ -190,34 +190,76 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * 關閉所有 codex 程序與桌面應用程式。
- * 先嘗試溫和關閉，等待 graceMs 後強制結束，確保乾淨終止。
+ * 1. 先嘗試溫和關閉（若有指定 graceMs），並在進程全部退出時提早結束等待。
+ * 2. 若有殘留進程，以 taskkill /F 強制結束相關進程與映像檔。
+ * 3. 關鍵輪詢確認（Wait-until-dead）：循環等待直到所有進程徹底退出，避免過早判定完成。
+ * 4. 退出後留給作業系統 500ms 冷卻緩衝期，確保 AppX 生命週期與 SingleInstance 互斥鎖完全釋放。
  */
 export async function stopCodexProcesses(graceMs = getCodexStopGraceMs()): Promise<CodexStopResult> {
   const before = await listCodexProcesses()
   if (before.length === 0) return { stopped: [], remaining: [] }
 
   invalidateListCache()
-  await Promise.all(
-    before.map((p) => runCommandAsync('taskkill.exe', ['/PID', String(p.pid), '/T'], 3000))
-  )
 
-  const wait = Math.max(0, Math.min(10000, graceMs))
-  if (wait > 0) await sleep(wait)
-
-  // 強制終止仍存活的程序（包含子程序樹）
-  const stillAlive = before.filter((p) => isProcessAlive(p.pid))
-  if (stillAlive.length > 0) {
+  const waitLimit = Math.max(0, Math.min(10000, graceMs))
+  if (waitLimit > 0) {
+    // 溫和關閉請求
     await Promise.all(
-      stillAlive.map((p) => runCommandAsync('taskkill.exe', ['/F', '/PID', String(p.pid), '/T'], 4000))
+      before.map((p) => runCommandAsync('taskkill.exe', ['/PID', String(p.pid), '/T'], 3000))
     )
-    // 額外確保映像檔完全關閉
+
+    // 每 150ms 檢查一次，若進程已提前優雅退出則不乾等滿 graceMs
+    const graceStart = Date.now()
+    while (Date.now() - graceStart < waitLimit) {
+      await sleep(150)
+      if (before.every((p) => !isProcessAlive(p.pid))) {
+        break
+      }
+    }
+  }
+
+  // 檢查是否仍有存活的進程
+  const stillAlive = before.filter((p) => isProcessAlive(p.pid))
+  if (stillAlive.length > 0 || waitLimit === 0) {
+    if (stillAlive.length > 0) {
+      await Promise.all(
+        stillAlive.map((p) => runCommandAsync('taskkill.exe', ['/F', '/PID', String(p.pid), '/T'], 4000))
+      )
+    }
+    // 確保相關映像檔全部強制關閉
     await Promise.all([
       runCommandAsync('taskkill.exe', ['/F', '/IM', 'ChatGPT.exe', '/T'], 4000),
       runCommandAsync('taskkill.exe', ['/F', '/IM', 'codex.exe', '/T'], 4000),
       runCommandAsync('taskkill.exe', ['/F', '/IM', 'codex-computer-use-swift.exe', '/T'], 4000)
     ])
-    await sleep(300)
   }
+
+  // 關鍵步驟：輪詢等待所有進程真正徹底消亡（最多等待 6 秒）
+  const pollDeadline = Date.now() + 6000
+  let retryKillSent = false
+  while (Date.now() < pollDeadline) {
+    const hasAlivePid = before.some((p) => isProcessAlive(p.pid))
+    if (!hasAlivePid) {
+      // 雙重確認：以 tasklist 檢查是否已無任何相關映像檔殘留
+      const rawRemaining = await listViaTasklistAsync()
+      if (rawRemaining.length === 0) {
+        break
+      }
+    }
+    // 若超過 2.5 秒仍有殘留，補送一次強制終止指令
+    if (!retryKillSent && Date.now() - (pollDeadline - 6000) > 2500) {
+      retryKillSent = true
+      await Promise.all([
+        runCommandAsync('taskkill.exe', ['/F', '/IM', 'ChatGPT.exe', '/T'], 4000),
+        runCommandAsync('taskkill.exe', ['/F', '/IM', 'codex.exe', '/T'], 4000)
+      ])
+    }
+    await sleep(200)
+  }
+
+  // 冷卻緩衝期：確認進程退出後額外等待 500ms，讓 Windows 釋放 AppX 註冊與 SingleInstance Mutex
+  await sleep(500)
+  invalidateListCache()
 
   const stopped: CodexProcessInfo[] = []
   const remaining: number[] = []
@@ -339,8 +381,39 @@ export function launchCodex(): CodexLaunchResult {
 /** 一鍵關閉再啟動 codex，讓切換帳號後能在同一介面繼續用 */
 export async function restartCodex(): Promise<CodexRestartResult> {
   const { stopped, remaining } = await stopCodexProcesses()
+
+  // 若仍有殘留進程無法終止，避免盲目重啟造成衝突
+  if (remaining.length > 0) {
+    return {
+      launched: false,
+      via: null,
+      exePath: '',
+      workDir: '',
+      pid: null,
+      message: `Codex 关闭失败（仍有 ${remaining.length} 个进程残留），未执行启动`,
+      stopped,
+      remaining
+    }
+  }
+
+  // 確保關閉後快取已失效
+  invalidateListCache()
+
   const launched = launchCodex()
-  return { ...launched, stopped, remaining }
+  if (!launched.launched) {
+    return { ...launched, stopped, remaining }
+  }
+
+  // 啟動指令已送出，稍候 600ms 刷新快取，讓前端能及時獲得最新進程狀態
+  await sleep(600)
+  invalidateListCache()
+
+  return {
+    ...launched,
+    message: launched.via === 'appx' ? '已重启 Codex 桌面版应用' : '已重启 Codex',
+    stopped,
+    remaining
+  }
 }
 
 /** 只啟動，不關閉現有程序 */
