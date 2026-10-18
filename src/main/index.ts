@@ -7,6 +7,7 @@ import type { PathsSnapshot } from '@shared/types'
 import {
   getCodexPathSnapshot,
   listCodexProcesses,
+  openCodexWindow,
   restartCodex,
   startCodex,
   stopCodexProcesses
@@ -371,6 +372,8 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('codex:start', () => startCodex())
+
+  ipcMain.handle('codex:openWindow', () => openCodexWindow())
 
   ipcMain.handle('codex:restart', async () => {
     return restartCodex()

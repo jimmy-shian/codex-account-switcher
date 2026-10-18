@@ -82,6 +82,7 @@ declare global {
       listCodexProcesses: () => Promise<CodexProcessInfo[]>
       stopCodex: () => Promise<CodexStopResult>
       startCodex: () => Promise<CodexLaunchResult>
+      openCodexWindow: () => Promise<CodexLaunchResult>
       restartCodex: () => Promise<CodexRestartResult>
     }
   }

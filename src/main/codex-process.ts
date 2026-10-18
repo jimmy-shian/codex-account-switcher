@@ -421,6 +421,75 @@ export function startCodex(): CodexLaunchResult {
   return launchCodex()
 }
 
+/**
+ * 開啟或呼叫 Codex / GPT 視窗（切換至前台）。
+ * 1. 若目前有官方桌面版應用 (AppX)，直接透過 shell:AppsFolder 呼叫/喚醒（Windows 會將執行中視窗帶至最前台；若未執行則啟動）。
+ * 2. 若為自訂 CLI 或其他執行檔，且已在執行中，嘗試透過 AppActivate 將視窗切至前台；若尚未執行則啟動。
+ */
+export async function openCodexWindow(): Promise<CodexLaunchResult> {
+  const override = getCodexExePathOverride()
+  const appxId = !override ? resolveCodexAppxPackageId() : null
+
+  if (appxId) {
+    const pid = spawnDetached('cmd.exe', ['/c', 'start', '', `shell:AppsFolder\\${appxId}`], process.cwd())
+    try {
+      execFileAsync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          "$w = New-Object -ComObject WScript.Shell; $w.AppActivate('ChatGPT'); $w.AppActivate('Codex')"
+        ],
+        { timeout: 3000 }
+      ).catch(() => {})
+    } catch {
+      /* ignore */
+    }
+
+    return {
+      launched: pid != null,
+      via: 'appx',
+      exePath: appxId,
+      workDir: process.cwd(),
+      pid,
+      message: '已呼叫 GPT 窗口（切换至前台）'
+    }
+  }
+
+  const running = await listCodexProcesses()
+  if (running.length > 0) {
+    try {
+      const pids = running.map((p) => p.pid).join(',')
+      await execFileAsync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          `$w = New-Object -ComObject WScript.Shell; $w.AppActivate('Codex'); $w.AppActivate('ChatGPT'); foreach ($p in @(${pids})) { $w.AppActivate($p) }`
+        ],
+        { timeout: 3000 }
+      )
+    } catch {
+      /* ignore */
+    }
+
+    return {
+      launched: true,
+      via: null,
+      exePath: override || '',
+      workDir: getCodexWorkDir(),
+      pid: running[0].pid,
+      message: '已呼叫 GPT 窗口（切换至前台）'
+    }
+  }
+
+  return launchCodex()
+}
+
 /** 一次回傳自訂值與自動偵測結果，讓 UI 直接顯示目前實際使用的路徑 */
 export function getCodexPathSnapshot(): CodexPathSnapshot {
   const workDirOverride = getCodexWorkDirOverride()
@@ -435,4 +504,5 @@ export function getCodexPathSnapshot(): CodexPathSnapshot {
     codexStopGraceMs: getCodexStopGraceMs()
   }
 }
+
 

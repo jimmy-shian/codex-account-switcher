@@ -36,5 +36,6 @@ contextBridge.exposeInMainWorld('codexSwitcher', {
   listCodexProcesses: () => ipcRenderer.invoke('codex:listProcesses'),
   stopCodex: () => ipcRenderer.invoke('codex:stop'),
   startCodex: () => ipcRenderer.invoke('codex:start'),
+  openCodexWindow: () => ipcRenderer.invoke('codex:openWindow'),
   restartCodex: () => ipcRenderer.invoke('codex:restart')
 })

@@ -101,7 +101,8 @@ export const AccountTable = memo(function AccountTable({
   onRefreshRow,
   onWarmupRow,
   onDelete,
-  onCopyEmail
+  onCopyEmail,
+  onOpenCodexWindow
 }: {
   rows: AccountRowView[]
   locale: UiLocale
@@ -114,6 +115,7 @@ export const AccountTable = memo(function AccountTable({
   onWarmupRow: (id: string, email: string) => void
   onDelete: (id: string, email: string) => void
   onCopyEmail: (email: string) => void
+  onOpenCodexWindow: () => void
 }) {
   return (
     <table className="account-table">
@@ -249,9 +251,9 @@ export const AccountTable = memo(function AccountTable({
                     <button
                       type="button"
                       className="btn btn-sm btn-primary btn-action-primary"
-                      disabled
-                      title={t('当前使用中')}
-                      aria-label={t('当前使用中')}
+                      onClick={onOpenCodexWindow}
+                      title={t('打开 GPT 窗口')}
+                      aria-label={t('打开 GPT 窗口')}
                     >
                       <OpIcon kind="switch" />
                       <span className="btn-label">{t('使用中')}</span>

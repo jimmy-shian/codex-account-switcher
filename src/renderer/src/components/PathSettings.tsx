@@ -121,7 +121,6 @@ export const PathSettings = memo(function PathSettings({
   onCommitCodexExe,
   onCommitWorkDir,
   onChangeTerminal,
-  onRestart,
   onToggleCodex,
   busy
 }: {
@@ -139,7 +138,6 @@ export const PathSettings = memo(function PathSettings({
   onCommitCodexExe: (value: string) => void
   onCommitWorkDir: (value: string) => void
   onChangeTerminal: (value: CodexTerminal) => void
-  onRestart: () => void
   /** 依執行狀態自動決定啟動或關閉 */
   onToggleCodex: () => void
   busy: boolean
@@ -172,15 +170,6 @@ export const PathSettings = memo(function PathSettings({
         <span className="path-running">
           {isRunning ? t(`Codex 运行中（${running.length}）`) : t('Codex 未启动')}
         </span>
-        <button
-          type="button"
-          className="btn btn-sm btn-toolbar btn-restart-codex"
-          onClick={onRestart}
-          disabled={busy}
-          title={t('关闭运行中的 Codex，再用新账号重新启动（Ctrl+Shift+R）')}
-        >
-          {t('一键重启 Codex')} (Ctrl+Shift+R)
-        </button>
         <button
           type="button"
           className={isRunning ? 'btn btn-sm btn-danger' : 'btn btn-sm btn-toolbar btn-start-codex'}

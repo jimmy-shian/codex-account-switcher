@@ -338,11 +338,17 @@ export default function App() {
         const r = await window.codexSwitcher.switchAccount(id)
         applyListState(r)
         showToast(`${t('已切换。')}${t(r.warning)}`)
+        // 切换账号后触发一鍵重啟 Codex，让新账号生效
+        try {
+          showToast(t((await paths.restart()).message))
+        } catch (e) {
+          showError(e)
+        }
       } catch (e) {
         showError(e)
       }
     },
-    [applyListState, showError, showToast, t]
+    [applyListState, paths.restart, showError, showToast, t]
   )
 
   const onRefreshRow = useCallback(
@@ -439,6 +445,14 @@ export default function App() {
   }, [])
 
   const onSwitchCb = useCallback((id: string) => void onSwitch(id), [onSwitch])
+  const onOpenCodexWindowCb = useCallback(async () => {
+    try {
+      const r = await window.codexSwitcher.openCodexWindow()
+      showToast(t(r.message))
+    } catch (e) {
+      showError(e)
+    }
+  }, [showError, showToast, t])
   const onRefreshRowCb = useCallback((id: string) => void onRefreshRow(id), [onRefreshRow])
   const onWarmupRowCb = useCallback(
     (id: string, email: string) => setWarmupConfirm({ mode: 'row', accountId: id, email }),
@@ -488,7 +502,6 @@ export default function App() {
         onCommitCodexExe={onCommitCodexExe}
         onCommitWorkDir={onCommitWorkDir}
         onChangeTerminal={onChangeTerminal}
-        onRestart={onRestartCodexCb}
         onToggleCodex={onToggleCodexCb}
       />
       {loginInProgress ? (
@@ -510,6 +523,7 @@ export default function App() {
             t={t}
             onSort={onSort}
             onSwitch={onSwitchCb}
+            onOpenCodexWindow={onOpenCodexWindowCb}
             onRefreshRow={onRefreshRowCb}
             onWarmupRow={onWarmupRowCb}
             onDelete={onDeleteCb}
