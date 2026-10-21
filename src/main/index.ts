@@ -31,6 +31,7 @@ import { isUiLocale } from '@shared/i18n'
 import { isThemeMode } from '@shared/theme'
 import { isQuotaViewMode } from '@shared/types'
 import { invalidateCodexExeCache } from './paths'
+import { createTray, destroyTray, isTrayAvailable, notifyHiddenToTray, resolveAppIcon } from './tray'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -40,6 +41,34 @@ if (process.platform === 'win32') {
 }
 
 const service = new AccountService()
+
+/** 縮到系統列後多久銷毀視窗進入休眠；期間內再開是瞬時的，超過後喚醒約需 1 秒 */
+const HIBERNATE_DELAY_MS = 10_000
+
+let mainWindow: BrowserWindow | null = null
+let mainWindowReady = false
+let quitting = false
+let hibernateTimer: NodeJS.Timeout | null = null
+
+function cancelHibernate(): void {
+  if (hibernateTimer != null) {
+    clearTimeout(hibernateTimer)
+    hibernateTimer = null
+  }
+}
+
+function scheduleHibernate(): void {
+  cancelHibernate()
+  hibernateTimer = setTimeout(() => {
+    hibernateTimer = null
+    const win = mainWindow
+    if (win && !win.isDestroyed() && !win.isVisible()) {
+      win.destroy()
+      mainWindow = null
+      mainWindowReady = false
+    }
+  }, HIBERNATE_DELAY_MS)
+}
 
 /**
  * 路徑設定的唯一組裝點。
@@ -110,17 +139,6 @@ function resolvePreload(): string {
   return path.join(base, 'index.js')
 }
 
-function resolveAppIcon(): string {
-  const iconName = process.platform === 'win32' ? 'icon.ico' : 'icon.png'
-  const candidates = [
-    path.join(process.resourcesPath, 'build', iconName),
-    path.join(process.resourcesPath, iconName),
-    path.join(__dirname, '../../build', iconName),
-    path.join(__dirname, '../../../build', iconName)
-  ]
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[candidates.length - 1]
-}
-
 function applyThemeSource(): void {
   try {
     const mode = getTheme()
@@ -139,6 +157,32 @@ function resolveWindowBackground(): string {
   } catch {
     return '#f3f4f6'
   }
+}
+
+function hideToTray(): void {
+  const win = mainWindow
+  if (!win || win.isDestroyed()) return
+  win.hide()
+  notifyHiddenToTray()
+  if (isTrayAvailable()) scheduleHibernate()
+}
+
+function showMainWindow(): void {
+  cancelHibernate()
+  const win = mainWindow
+  if (!win || win.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (!mainWindowReady) return
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+}
+
+function quitApp(): void {
+  quitting = true
+  app.quit()
 }
 
 function createWindow(): void {
@@ -163,7 +207,11 @@ function createWindow(): void {
     title: mainText('Codex 切号器')
   })
 
+  mainWindow = win
+  mainWindowReady = false
+
   win.once('ready-to-show', () => {
+    mainWindowReady = true
     try {
       if (!win.isDestroyed()) win.show()
     } catch {
@@ -178,11 +226,28 @@ function createWindow(): void {
   // 注意：主進程是 Node 環境，沒有 window，用全域 setTimeout
   setTimeout(() => {
     try {
-      if (!win.isDestroyed() && !win.isVisible()) win.show()
+      if (!win.isDestroyed() && !win.isVisible()) {
+        mainWindowReady = true
+        win.show()
+      }
     } catch {
       /* ignore */
     }
   }, 3000)
+
+  win.on('close', (event) => {
+    if (quitting || !isTrayAvailable()) return
+    event.preventDefault()
+    hideToTray()
+  })
+
+  win.on('minimize', () => {
+    if (!isTrayAvailable()) return
+    hideToTray()
+  })
+
+  win.on('show', () => cancelHibernate())
+  win.on('restore', () => cancelHibernate())
 
   if (process.env.ELECTRON_RENDERER_URL) {
     win.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -387,8 +452,9 @@ app.whenReady().then(() => {
       Menu.setApplicationMenu(null)
       registerIpc()
       createWindow()
+      createTray({ showMainWindow, quitApp })
       app.on('activate', () => {
-        if (BrowserWindow.getAllWindows().length === 0) createWindow()
+        showMainWindow()
       })
     })
     .catch((err) => {
@@ -398,7 +464,13 @@ app.whenReady().then(() => {
     })
 })
 
+app.on('before-quit', () => {
+  quitting = true
+  cancelHibernate()
+  destroyTray()
+})
+
 app.on('window-all-closed', () => {
-  if (isDebugMode()) return
-  if (process.platform !== 'darwin') app.quit()
+  // 視窗休眠銷毀時不退出，常駐系統列；沒有托盤圖示時才退出
+  if (!isTrayAvailable()) app.quit()
 })
