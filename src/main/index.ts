@@ -445,8 +445,9 @@ function registerIpc(): void {
   })
 }
 
-app.whenReady().then(() => {
-  runDebugModeIfNeeded()
+function startApp(): void {
+  app.whenReady()
+    .then(() => runDebugModeIfNeeded())
     .then((handled) => {
       if (handled) return
       Menu.setApplicationMenu(null)
@@ -462,13 +463,27 @@ app.whenReady().then(() => {
       process.stderr.write(`${msg}\n`)
       app.quit()
     })
-})
+}
+
+// 關閉視窗會繼續常駐系統列；再次啟動時喚回原視窗，避免累積程序與圖示。
+// 除錯工作不建立視窗或圖示，保留獨立執行的能力。
+if (isDebugMode()) {
+  startApp()
+} else if (app.requestSingleInstanceLock()) {
+  app.on('second-instance', () => showMainWindow())
+  startApp()
+} else {
+  app.quit()
+}
 
 app.on('before-quit', () => {
   quitting = true
   cancelHibernate()
   destroyTray()
 })
+
+// app.exit() 不會觸發 before-quit，仍須在程序結束前移除圖示。
+process.once('exit', () => destroyTray())
 
 app.on('window-all-closed', () => {
   // 視窗休眠銷毀時不退出，常駐系統列；沒有托盤圖示時才退出
